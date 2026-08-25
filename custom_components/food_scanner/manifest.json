@@ -1,7 +1,7 @@
 {
   "domain": "food_scanner",
   "name": "Food Scanner",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "documentation": "https://github.com/Sangua90/food-scanner",
   "issue_tracker": "https://github.com/Sangua90/food-scanner/issues",
   "codeowners": ["@Sangua90"],
