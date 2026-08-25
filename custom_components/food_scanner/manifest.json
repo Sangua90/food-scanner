@@ -1,11 +1,11 @@
 {
   "domain": "food_scanner",
   "name": "Food Scanner",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "documentation": "https://github.com/Sangua90/food-scanner",
   "issue_tracker": "https://github.com/Sangua90/food-scanner/issues",
   "codeowners": ["@Sangua90"],
   "config_flow": true,
-  "dependencies": ["persistent_notification"],
+  "dependencies": ["persistent_notification", "http"],
   "iot_class": "cloud_push"
 }
