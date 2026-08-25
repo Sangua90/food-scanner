@@ -48,7 +48,7 @@ async def async_lookup_barcode(hass: HomeAssistant, barcode: str | None) -> dict
 
     session = async_get_clientsession(hass)
     params = {
-        "fields": "code,product_name,product_name_it,brands,quantity,categories_tags,categories,image_front_small_url",
+        "fields": "code,product_name,product_name_it,brands,quantity,categories_tags,image_front_small_url",
     }
     try:
         async with session.get(
@@ -79,7 +79,7 @@ async def async_lookup_barcode(hass: HomeAssistant, barcode: str | None) -> dict
         "product_name": _clean(product.get("product_name_it")) or _clean(product.get("product_name")),
         "brand": _clean(product.get("brands")),
         "quantity": _clean(product.get("quantity")),
-        "category": _simple_category(tags) or _clean(product.get("categories")),
+        "category": _simple_category(tags),
         "image_url": _clean(product.get("image_front_small_url")),
         "source": "open_food_facts",
     }
@@ -94,10 +94,12 @@ def merge_off_data(food: dict[str, Any], off: dict[str, Any] | None) -> dict[str
         ("product_name", "product_name"),
         ("brand", "brand"),
         ("quantity", "quantity"),
-        ("category", "category"),
     ):
         if not merged.get(target) and off.get(source):
             merged[target] = off[source]
+
+    if off.get("category") and str(merged.get("category") or "Altro").strip().casefold() in {"", "altro"}:
+        merged["category"] = off["category"]
 
     if off.get("image_url"):
         merged["product_image_url"] = off["image_url"]
