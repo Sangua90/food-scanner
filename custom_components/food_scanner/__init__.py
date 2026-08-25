@@ -17,7 +17,7 @@ from .review import get_review_queue
 from .scan_api import FoodScannerDashboardScanView
 from .service import async_setup_services
 from .units import async_install_standard_units
-RUNTIME_KEY=f"{DOMAIN}_runtime";PANEL_URL_PATH="food-scanner";PANEL_STATIC_URL="/food_scanner_static";PANEL_VERSION="1.2.1"
+RUNTIME_KEY=f"{DOMAIN}_runtime";PANEL_URL_PATH="food-scanner";PANEL_STATIC_URL="/food_scanner_static";PANEL_VERSION="1.3.0"
 async def async_setup(hass:HomeAssistant,config:dict)->bool:return True
 async def async_setup_entry(hass:HomeAssistant,entry:ConfigEntry)->bool:
  hass.data.setdefault(DOMAIN,{})[entry.entry_id]=entry;runtime=hass.data.setdefault(RUNTIME_KEY,{})
@@ -35,7 +35,7 @@ async def async_setup_entry(hass:HomeAssistant,entry:ConfigEntry)->bool:
   if not runtime.get(key):hass.http.register_view(view);runtime[key]=True
  if not runtime.get("export_view_registered"):hass.http.register_view(FoodScannerExportView);hass.http.register_view(FoodScannerExportDataView);runtime["export_view_registered"]=True
  if not runtime.get("panel_static_registered"):await hass.http.async_register_static_paths([StaticPathConfig(PANEL_STATIC_URL,str(Path(__file__).parent/"www"),cache_headers=False)]);runtime["panel_static_registered"]=True
- if not frontend.async_panel_exists(hass,PANEL_URL_PATH):await panel_custom.async_register_panel(hass=hass,frontend_url_path=PANEL_URL_PATH,webcomponent_name="food-scanner-panel",sidebar_title="Food Scanner",sidebar_icon="mdi:food-apple-outline",module_url=f"{PANEL_STATIC_URL}/panel_v121.js?v={PANEL_VERSION}",require_admin=False)
+ if not frontend.async_panel_exists(hass,PANEL_URL_PATH):await panel_custom.async_register_panel(hass=hass,frontend_url_path=PANEL_URL_PATH,webcomponent_name="food-scanner-panel",sidebar_title="HomeStock",sidebar_icon="mdi:home-analytics",module_url=f"{PANEL_STATIC_URL}/panel_v130.js?v={PANEL_VERSION}",require_admin=False)
  runtime["panel_registered"]=True
  old=runtime.pop("expiry_notifier",None)
  if old is not None:await old.async_unload()
