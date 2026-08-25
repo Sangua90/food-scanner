@@ -12,7 +12,7 @@ from .archive import get_archive
 from .archive_api import FoodScannerArchiveView
 from .const import DOMAIN
 from .expiry import ExpiryNotifier
-from .export_api import FoodScannerExportView
+from .export_api import FoodScannerExportDataView, FoodScannerExportView
 from .history import get_history
 from .review import get_review_queue
 from .service import async_setup_services
@@ -58,6 +58,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if not runtime.get("export_view_registered"):
         hass.http.register_view(FoodScannerExportView)
+        hass.http.register_view(FoodScannerExportDataView)
         runtime["export_view_registered"] = True
 
     if not runtime.get("panel_static_registered"):
@@ -77,7 +78,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             webcomponent_name="food-scanner-panel",
             sidebar_title="Food Scanner",
             sidebar_icon="mdi:food-apple-outline",
-            module_url=f"{PANEL_STATIC_URL}/panel.js?v={PANEL_VERSION}",
+            module_url=f"{PANEL_STATIC_URL}/panel_boot.js?v={PANEL_VERSION}",
             require_admin=False,
         )
     runtime["panel_registered"] = True
