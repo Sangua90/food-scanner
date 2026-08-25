@@ -12,17 +12,9 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .archive import get_archive
 from .const import (
-    CONF_EXPIRY_NOTIFY,
-    CONF_EXPIRY_NOTIFY_DAYS,
-    CONF_EXPIRY_NOTIFY_SERVICE,
-    CONF_MODEL,
-    CONF_NOTIFY,
-    DEFAULT_EXPIRY_NOTIFY,
-    DEFAULT_EXPIRY_NOTIFY_DAYS,
-    DEFAULT_EXPIRY_NOTIFY_SERVICE,
-    DEFAULT_MODEL,
-    DEFAULT_NOTIFY,
-    DOMAIN,
+    CONF_EXPIRY_NOTIFY, CONF_EXPIRY_NOTIFY_DAYS, CONF_EXPIRY_NOTIFY_SERVICE,
+    CONF_MODEL, CONF_NOTIFY, DEFAULT_EXPIRY_NOTIFY, DEFAULT_EXPIRY_NOTIFY_DAYS,
+    DEFAULT_EXPIRY_NOTIFY_SERVICE, DEFAULT_MODEL, DEFAULT_NOTIFY, DOMAIN,
 )
 from .history import get_history
 from .openfoodfacts import async_lookup_barcode
@@ -31,24 +23,36 @@ from .review import get_review_queue
 VALID_SORTS = {"expiry", "name", "added"}
 VALID_LOCATIONS = {"frigo", "freezer", "dispensa"}
 SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
-MAX_RETRY_IMAGE_BYTES = 12 * 1024 * 1024
+MAX_IMAGE_BYTES = 12 * 1024 * 1024
 
 
 def _get_entry(hass):
     entries = hass.data.get(DOMAIN, {})
-    if not entries:
-        return None
-    return next(iter(entries.values()))
+    return next(iter(entries.values()), None) if entries else None
 
 
 def _settings(entry) -> dict[str, Any]:
     return {
         "model": entry.options.get(CONF_MODEL, entry.data.get(CONF_MODEL, DEFAULT_MODEL)),
-        "notify": entry.options.get(CONF_NOTIFY, DEFAULT_NOTIFY),
+        "notify": False,
         "expiry_notify": entry.options.get(CONF_EXPIRY_NOTIFY, DEFAULT_EXPIRY_NOTIFY),
         "expiry_notify_days": entry.options.get(CONF_EXPIRY_NOTIFY_DAYS, DEFAULT_EXPIRY_NOTIFY_DAYS),
         "expiry_notify_service": entry.options.get(CONF_EXPIRY_NOTIFY_SERVICE, DEFAULT_EXPIRY_NOTIFY_SERVICE),
     }
+
+
+def _decode_image(data: dict[str, Any]) -> tuple[bytes, str]:
+    mime_type = str(data.get("mime_type") or "image/jpeg").lower()
+    if mime_type not in SUPPORTED_MIME_TYPES:
+        raise ValueError("Formato foto non supportato")
+    raw = str(data.get("image_data") or "")
+    try:
+        image_bytes = base64.b64decode(raw, validate=True)
+    except (ValueError, TypeError) as err:
+        raise ValueError("Foto non valida") from err
+    if not image_bytes or len(image_bytes) > MAX_IMAGE_BYTES:
+        raise ValueError("Foto vuota o troppo grande (massimo 12 MB)")
+    return image_bytes, mime_type
 
 
 class FoodScannerArchiveView(HomeAssistantView):
@@ -66,7 +70,6 @@ class FoodScannerArchiveView(HomeAssistantView):
         if location not in VALID_LOCATIONS:
             location = None
         search = (request.query.get("search") or "").strip() or None
-
         items = archive.items_sorted(sort=sort, location=location, search=search)
         reviews = get_review_queue(hass).items()
         history = get_history(hass)
@@ -74,13 +77,9 @@ class FoodScannerArchiveView(HomeAssistantView):
         return self.json({
             "count": len(items),
             "total_units": sum(int(item.get("stock_units", 1)) for item in items),
-            "sort": sort,
-            "location": location,
-            "items": items,
-            "review_count": len(reviews),
-            "reviews": reviews,
-            "summary": archive.summary(),
-            "statistics": history.stats(),
+            "sort": sort, "location": location, "items": items,
+            "review_count": len(reviews), "reviews": reviews,
+            "summary": archive.summary(), "statistics": history.stats(),
             "history": history.events(limit=50),
             "settings": _settings(entry) if entry else {},
         })
@@ -93,8 +92,21 @@ class FoodScannerArchiveView(HomeAssistantView):
             data = await request.json()
         except ValueError:
             return self.json_message("JSON non valido", status_code=HTTPStatus.BAD_REQUEST)
-
         action = str(data.get("action") or "").strip().lower()
+
+        if action == "scan_image":
+            location = str(data.get("location") or "").strip().lower()
+            if location not in VALID_LOCATIONS:
+                return self.json_message("Scegli Frigo, Freezer o Dispensa", status_code=HTTPStatus.BAD_REQUEST)
+            try:
+                image_bytes, mime_type = _decode_image(data)
+                from .service import async_analyze_image_bytes
+                result = await async_analyze_image_bytes(
+                    hass, image_bytes, mime_type, notify=False, location=location
+                )
+            except (ValueError, HomeAssistantError) as err:
+                return self.json_message(str(err), status_code=HTTPStatus.BAD_REQUEST)
+            return self.json(result)
 
         if action == "lookup_barcode":
             barcode = str(data.get("barcode") or "").strip()
@@ -118,8 +130,7 @@ class FoodScannerArchiveView(HomeAssistantView):
             if entry is None:
                 return self.json_message("Food Scanner non configurato", status_code=HTTPStatus.BAD_REQUEST)
             current = dict(entry.options)
-            if "notify" in data:
-                current[CONF_NOTIFY] = bool(data.get("notify"))
+            current[CONF_NOTIFY] = False
             if "expiry_notify" in data:
                 current[CONF_EXPIRY_NOTIFY] = bool(data.get("expiry_notify"))
             if "expiry_notify_days" in data:
@@ -148,20 +159,13 @@ class FoodScannerArchiveView(HomeAssistantView):
             pending = queue.get(product_id)
             if pending is None:
                 return self.json_message("Verifica non trovata", status_code=HTTPStatus.NOT_FOUND)
-            mime_type = str(data.get("mime_type") or "image/jpeg").lower()
-            if mime_type not in SUPPORTED_MIME_TYPES:
-                return self.json_message("Formato foto non supportato", status_code=HTTPStatus.BAD_REQUEST)
-            raw = str(data.get("image_data") or "")
             try:
-                image_bytes = base64.b64decode(raw, validate=True)
-            except (ValueError, TypeError):
-                return self.json_message("Foto non valida", status_code=HTTPStatus.BAD_REQUEST)
-            if not image_bytes or len(image_bytes) > MAX_RETRY_IMAGE_BYTES:
-                return self.json_message("Foto vuota o troppo grande", status_code=HTTPStatus.BAD_REQUEST)
-            try:
+                image_bytes, mime_type = _decode_image(data)
                 from .service import async_analyze_image_bytes
-                result = await async_analyze_image_bytes(hass, image_bytes, mime_type, notify=True, review_id=product_id)
-            except HomeAssistantError as err:
+                result = await async_analyze_image_bytes(
+                    hass, image_bytes, mime_type, notify=False, review_id=product_id
+                )
+            except (ValueError, HomeAssistantError) as err:
                 return self.json_message(str(err), status_code=HTTPStatus.BAD_REQUEST)
             if result.get("status") == "archived":
                 async_dismiss(hass, f"food_scanner_review_{product_id}")
@@ -199,7 +203,6 @@ class FoodScannerArchiveView(HomeAssistantView):
             amount = int(data.get("amount", 1))
         except (TypeError, ValueError):
             return self.json_message("Quantità non valida", status_code=HTTPStatus.BAD_REQUEST)
-
         try:
             if action == "consume":
                 result = await archive.async_consume(product_id, amount)
