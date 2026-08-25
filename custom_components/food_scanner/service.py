@@ -33,6 +33,7 @@ Interpreta correttamente le date italiane GG/MM/AAAA e GG/MM/AA.
 """
 
 SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+VALID_LOCATIONS = {"frigo", "freezer", "dispensa"}
 
 
 def _entry_settings(entry):
@@ -48,17 +49,29 @@ def _get_entry(hass: HomeAssistant):
     return next(iter(entries.values()))
 
 
+def _normalize_location(location: str | None) -> str | None:
+    if location is None:
+        return None
+    value = location.strip().lower()
+    if value not in VALID_LOCATIONS:
+        raise HomeAssistantError("Posizione non valida. Usa frigo, freezer o dispensa.")
+    return value
+
+
 async def async_analyze_image_bytes(
     hass: HomeAssistant,
     image_bytes: bytes,
     mime_type: str,
     notify: bool | None = None,
+    location: str | None = None,
 ) -> dict:
     """Analizza bytes immagine con Gemini e restituisce i dati del prodotto."""
     if not image_bytes:
         raise HomeAssistantError("La foto ricevuta è vuota.")
     if mime_type not in SUPPORTED_MIME_TYPES:
         raise HomeAssistantError("Formato immagine non supportato. Usa JPG, PNG o WEBP.")
+
+    location = _normalize_location(location)
 
     entry = _get_entry(hass)
     api_key = entry.data.get(CONF_API_KEY)
@@ -103,10 +116,14 @@ async def async_analyze_image_bytes(
         raise HomeAssistantError(f"Risposta Gemini non valida: {err}") from err
 
     state = food.get("product_name") or "Prodotto non riconosciuto"
+    attributes = {"friendly_name": "Food Scanner - Ultimo risultato", "model": model, **food}
+    if location:
+        attributes["location"] = location
+
     hass.states.async_set(
         "sensor.food_scanner_last_result",
         state,
-        {"friendly_name": "Food Scanner - Ultimo risultato", "model": model, **food},
+        attributes,
     )
 
     if should_notify:
@@ -115,6 +132,9 @@ async def async_analyze_image_bytes(
             lines[0] += f" — {food['brand']}"
         if food.get("quantity"):
             lines.append(str(food["quantity"]))
+        if location:
+            labels = {"frigo": "Frigo", "freezer": "Freezer", "dispensa": "Dispensa"}
+            lines.append(f"Posizione: **{labels[location]}**")
         lines.append(f"Scadenza/TMC: **{food.get('expiry_date') or 'non rilevata'}**")
         if food.get("barcode"):
             lines.append(f"EAN: `{food['barcode']}`")
@@ -127,7 +147,10 @@ async def async_analyze_image_bytes(
             notification_id="food_scanner_last",
         )
 
-    return {"success": True, "model": model, **food}
+    response_data = {"success": True, "model": model, **food}
+    if location:
+        response_data["location"] = location
+    return response_data
 
 
 async def async_setup_services(hass: HomeAssistant) -> None:
@@ -151,6 +174,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 path.read_bytes(),
                 mime_type,
                 call.data.get(CONF_NOTIFY),
+                call.data.get("location"),
             )
         except HomeAssistantError:
             raise
@@ -161,6 +185,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         {
             vol.Required("image_path"): str,
             vol.Optional(CONF_NOTIFY): bool,
+            vol.Optional("location"): vol.In(["frigo", "freezer", "dispensa"]),
         }
     )
     hass.services.async_register(DOMAIN, SERVICE_SCAN_IMAGE, handle_scan, schema)
