@@ -33,18 +33,23 @@ from .const import (
     SERVICE_REMOVE_PRODUCT,
     SERVICE_CLEAR_ARCHIVE,
 )
+from .openfoodfacts import async_lookup_barcode, merge_off_data
 from .review import get_review_queue
 
 BASE_PROMPT = """Analizza questa foto di un prodotto alimentare.
 Restituisci esclusivamente un oggetto JSON valido con questi campi:
 product_name, brand, quantity, barcode, expiry_date, expiry_type, confidence,
-package_type, units_per_package, unit_name,
+package_type, units_per_package, unit_name, category,
 inventory_ready, needs_more_photo, missing_fields, photo_request.
 
 Regole:
 - expiry_date deve essere YYYY-MM-DD oppure null.
 - expiry_type deve essere \"scadenza\", \"TMC\" oppure null.
 - confidence deve essere un numero da 0 a 100.
+- category deve essere una categoria breve in italiano, preferibilmente una tra:
+  Latticini, Carne e salumi, Pesce, Bevande, Colazione, Snack e dolci,
+  Pasta riso e cereali, Conserve, Frutta, Verdura, Surgelati,
+  Salse e condimenti, Pane e prodotti da forno, Altro.
 - package_type descrive il contenitore/confezione visibile, per esempio:
   \"scatola\", \"confezione\", \"bottiglia\", \"lattina\", \"barattolo\", \"vasetto\", \"busta\", \"pezzo\".
 - units_per_package è il numero di unità realmente consumabili nella confezione fotografata.
@@ -116,6 +121,7 @@ def _normalize_package_fields(food: dict[str, Any]) -> None:
     food["units_per_package"] = max(1, units)
     food["unit_name"] = str(food.get("unit_name") or "unità").strip()
     food["package_type"] = str(food.get("package_type") or "confezione").strip()
+    food["category"] = str(food.get("category") or "Altro").strip() or "Altro"
 
     try:
         food["confidence"] = max(0, min(100, int(food.get("confidence") or 0)))
@@ -131,7 +137,6 @@ def _normalize_package_fields(food: dict[str, Any]) -> None:
 
 
 def _is_inventory_ready(food: dict[str, Any]) -> bool:
-    """Applica controlli minimi anche se il modello è troppo ottimista."""
     if not food.get("product_name"):
         return False
 
@@ -191,23 +196,16 @@ def _resolve_mobile_notify(hass: HomeAssistant, entry) -> tuple[str, str] | None
     return None
 
 
-async def _send_review_alert(
-    hass: HomeAssistant,
-    entry,
-    food: dict[str, Any],
-    review_id: str,
-) -> None:
+async def _send_review_alert(hass: HomeAssistant, entry, food: dict[str, Any], review_id: str) -> None:
     name = food.get("product_name") or "Prodotto non identificato"
     request = food.get("photo_request") or "Serve una foto più chiara del prodotto e della scadenza."
     message = f"{name}: {request} Apri Food Scanner → Da verificare."
-
     async_create_persistent_notification(
         hass,
         f"**{name}**\n\n{request}\n\nID verifica: `{review_id}`",
         title="📸 Food Scanner — serve un'altra foto",
         notification_id=f"food_scanner_review_{review_id}",
     )
-
     target = _resolve_mobile_notify(hass, entry)
     if target:
         domain, service = target
@@ -215,11 +213,7 @@ async def _send_review_alert(
             await hass.services.async_call(
                 domain,
                 service,
-                {
-                    "title": "Food Scanner — serve un'altra foto",
-                    "message": message,
-                    "data": {"url": "/food-scanner"},
-                },
+                {"title": "Food Scanner — serve un'altra foto", "message": message, "data": {"url": "/food-scanner"}},
                 blocking=False,
             )
         except Exception:
@@ -236,24 +230,15 @@ async def _call_gemini(
     api_key = entry.data.get(CONF_API_KEY)
     if not api_key:
         raise HomeAssistantError("API key Gemini mancante.")
-
     model, _ = _entry_settings(entry)
     encoded = base64.b64encode(image_bytes).decode("ascii")
     payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"inline_data": {"mime_type": mime_type, "data": encoded}},
-                    {"text": _build_prompt(previous_food)},
-                ]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0,
-            "responseMimeType": "application/json",
-        },
+        "contents": [{"parts": [
+            {"inline_data": {"mime_type": mime_type, "data": encoded}},
+            {"text": _build_prompt(previous_food)},
+        ]}],
+        "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
     }
-
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     session = async_get_clientsession(hass)
     try:
@@ -275,10 +260,8 @@ async def _call_gemini(
         food = json.loads(text)
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as err:
         raise HomeAssistantError(f"Risposta Gemini non valida: {err}") from err
-
     if not isinstance(food, dict):
         raise HomeAssistantError("Risposta Gemini non valida: oggetto prodotto mancante.")
-
     _normalize_package_fields(food)
     return food, model
 
@@ -291,7 +274,6 @@ async def async_analyze_image_bytes(
     location: str | None = None,
     review_id: str | None = None,
 ) -> dict:
-    """Analizza una foto, archivia se pronta o la mette in coda di verifica."""
     if not image_bytes:
         raise HomeAssistantError("La foto ricevuta è vuota.")
     if mime_type not in SUPPORTED_MIME_TYPES:
@@ -311,8 +293,13 @@ async def async_analyze_image_bytes(
         location = pending.get("location") or location
 
     food, model = await _call_gemini(hass, image_bytes, mime_type, previous_food)
-    ready = _is_inventory_ready(food)
 
+    if food.get("barcode"):
+        off = await async_lookup_barcode(hass, str(food.get("barcode")))
+        food = merge_off_data(food, off)
+        _normalize_package_fields(food)
+
+    ready = _is_inventory_ready(food)
     archive_item = None
     created = False
     added_units = 0
@@ -329,11 +316,7 @@ async def async_analyze_image_bytes(
         await _send_review_alert(hass, entry, food, review_id)
 
     state = food.get("product_name") or "Prodotto da verificare"
-    attributes = {
-        "friendly_name": "Food Scanner - Ultimo risultato",
-        "model": model,
-        **food,
-    }
+    attributes = {"friendly_name": "Food Scanner - Ultimo risultato", "model": model, **food}
     if location:
         attributes["location"] = location
     if archive_item:
@@ -342,7 +325,6 @@ async def async_analyze_image_bytes(
     if pending_item:
         attributes["review_id"] = pending_item["id"]
         attributes["status"] = "da_verificare"
-
     hass.states.async_set("sensor.food_scanner_last_result", state, attributes)
 
     if ready and should_notify:
@@ -351,12 +333,15 @@ async def async_analyze_image_bytes(
             lines[0] += f" — {food['brand']}"
         if food.get("quantity"):
             lines.append(str(food["quantity"]))
+        if food.get("category"):
+            lines.append(f"Categoria: **{food['category']}**")
         if location:
             labels = {"frigo": "Frigo", "freezer": "Freezer", "dispensa": "Dispensa"}
             lines.append(f"Posizione: **{labels[location]}**")
         lines.append(f"Scadenza/TMC: **{food.get('expiry_date') or 'non rilevata'}**")
         if food.get("barcode"):
-            lines.append(f"EAN: `{food['barcode']}`")
+            source = " · Open Food Facts" if food.get("open_food_facts_found") else ""
+            lines.append(f"EAN: `{food['barcode']}`{source}")
         if archive_item:
             unit_name = archive_item.get("unit_name") or "unità"
             total = archive_item.get("stock_units", added_units or 1)
@@ -366,7 +351,6 @@ async def async_analyze_image_bytes(
             lines.append("Nuovo lotto" if created else "Lotto esistente aggiornato")
         if food.get("confidence") is not None:
             lines.append(f"Confidenza: {food['confidence']}%")
-
         async_create_persistent_notification(
             hass,
             "\n".join(lines),
@@ -374,12 +358,7 @@ async def async_analyze_image_bytes(
             notification_id="food_scanner_last",
         )
 
-    response_data = {
-        "success": True,
-        "model": model,
-        "status": "archived" if ready else "needs_review",
-        **food,
-    }
+    response_data = {"success": True, "model": model, "status": "archived" if ready else "needs_review", **food}
     if location:
         response_data["location"] = location
     if archive_item:
@@ -396,15 +375,10 @@ async def async_confirm_review(hass: HomeAssistant, review_id: str) -> dict[str,
     pending = get_review_queue(hass).get(review_id)
     if pending is None:
         raise HomeAssistantError("Verifica non trovata.")
-
     food = dict(pending.get("food") or {})
     if not food.get("product_name"):
         raise HomeAssistantError("Il nome del prodotto manca: serve almeno un'altra foto.")
-
-    item, created, added_units = await get_archive(hass).async_add(
-        food,
-        pending.get("location"),
-    )
+    item, created, added_units = await get_archive(hass).async_add(food, pending.get("location"))
     await get_review_queue(hass).async_remove(review_id)
     async_dismiss(hass, f"food_scanner_review_{review_id}")
     return {"item": item, "new_lot": created, "added_units": added_units}
@@ -416,59 +390,35 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             path = Path(call.data["image_path"])
             if not path.exists() or not path.is_file():
                 raise HomeAssistantError(f"Immagine non trovata: {path}")
-
             suffix = path.suffix.lower()
-            mime_map = {
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".png": "image/png",
-                ".webp": "image/webp",
-                ".heic": "image/heic",
-                ".heif": "image/heif",
-            }
+            mime_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".heic": "image/heic", ".heif": "image/heif"}
             mime_type = mime_map.get(suffix)
             if mime_type is None:
-                raise HomeAssistantError(
-                    "Formato immagine non supportato. Usa JPG, PNG, WEBP, HEIC o HEIF."
-                )
-
-            await async_analyze_image_bytes(
-                hass,
-                path.read_bytes(),
-                mime_type,
-                call.data.get(CONF_NOTIFY),
-                call.data.get("location"),
-            )
+                raise HomeAssistantError("Formato immagine non supportato. Usa JPG, PNG, WEBP, HEIC o HEIF.")
+            await async_analyze_image_bytes(hass, path.read_bytes(), mime_type, call.data.get(CONF_NOTIFY), call.data.get("location"))
         except HomeAssistantError:
             raise
         except Exception as err:
-            raise HomeAssistantError(
-                f"Errore interno Food Scanner: {type(err).__name__}: {err}"
-            ) from err
+            raise HomeAssistantError(f"Errore interno Food Scanner: {type(err).__name__}: {err}") from err
 
     async def handle_consume(call: ServiceCall) -> None:
-        product_id = call.data["product_id"]
-        amount = call.data.get("amount", 1)
         try:
-            result = await get_archive(hass).async_consume(product_id, amount)
+            result = await get_archive(hass).async_consume(call.data["product_id"], call.data.get("amount", 1))
         except ValueError as err:
             raise HomeAssistantError(str(err)) from err
         if result is None:
             raise HomeAssistantError("Prodotto non trovato nell'archivio.")
 
     async def handle_set_stock(call: ServiceCall) -> None:
-        product_id = call.data["product_id"]
-        amount = call.data["amount"]
         try:
-            result = await get_archive(hass).async_set_units(product_id, amount)
+            result = await get_archive(hass).async_set_units(call.data["product_id"], call.data["amount"])
         except ValueError as err:
             raise HomeAssistantError(str(err)) from err
         if result is None:
             raise HomeAssistantError("Prodotto non trovato nell'archivio.")
 
     async def handle_remove(call: ServiceCall) -> None:
-        product_id = call.data["product_id"]
-        removed = await get_archive(hass).async_remove(product_id)
+        removed = await get_archive(hass).async_remove(call.data["product_id"])
         if not removed:
             raise HomeAssistantError("Prodotto non trovato nell'archivio.")
 
@@ -476,62 +426,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         await get_archive(hass).async_clear()
 
     if not hass.services.has_service(DOMAIN, SERVICE_SCAN_IMAGE):
-        scan_schema = vol.Schema(
-            {
-                vol.Required("image_path"): str,
-                vol.Optional(CONF_NOTIFY): bool,
-                vol.Optional("location"): vol.In(["frigo", "freezer", "dispensa"]),
-            }
-        )
-        hass.services.async_register(DOMAIN, SERVICE_SCAN_IMAGE, handle_scan, scan_schema)
-
+        hass.services.async_register(DOMAIN, SERVICE_SCAN_IMAGE, handle_scan, vol.Schema({vol.Required("image_path"): str, vol.Optional(CONF_NOTIFY): bool, vol.Optional("location"): vol.In(["frigo", "freezer", "dispensa"])}))
     if not hass.services.has_service(DOMAIN, SERVICE_CONSUME_PRODUCT):
-        consume_schema = vol.Schema(
-            {
-                vol.Required("product_id"): str,
-                vol.Optional("amount", default=1): vol.All(
-                    vol.Coerce(int),
-                    vol.Range(min=1),
-                ),
-            }
-        )
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_CONSUME_PRODUCT,
-            handle_consume,
-            consume_schema,
-        )
-
+        hass.services.async_register(DOMAIN, SERVICE_CONSUME_PRODUCT, handle_consume, vol.Schema({vol.Required("product_id"): str, vol.Optional("amount", default=1): vol.All(vol.Coerce(int), vol.Range(min=1))}))
     if not hass.services.has_service(DOMAIN, SERVICE_SET_STOCK):
-        set_stock_schema = vol.Schema(
-            {
-                vol.Required("product_id"): str,
-                vol.Required("amount"): vol.All(
-                    vol.Coerce(int),
-                    vol.Range(min=0),
-                ),
-            }
-        )
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_SET_STOCK,
-            handle_set_stock,
-            set_stock_schema,
-        )
-
+        hass.services.async_register(DOMAIN, SERVICE_SET_STOCK, handle_set_stock, vol.Schema({vol.Required("product_id"): str, vol.Required("amount"): vol.All(vol.Coerce(int), vol.Range(min=0))}))
     if not hass.services.has_service(DOMAIN, SERVICE_REMOVE_PRODUCT):
-        remove_schema = vol.Schema({vol.Required("product_id"): str})
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_REMOVE_PRODUCT,
-            handle_remove,
-            remove_schema,
-        )
-
+        hass.services.async_register(DOMAIN, SERVICE_REMOVE_PRODUCT, handle_remove, vol.Schema({vol.Required("product_id"): str}))
     if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_ARCHIVE):
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_CLEAR_ARCHIVE,
-            handle_clear,
-            vol.Schema({}),
-        )
+        hass.services.async_register(DOMAIN, SERVICE_CLEAR_ARCHIVE, handle_clear, vol.Schema({}))
