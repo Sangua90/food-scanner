@@ -1,6 +1,6 @@
 scan_image:
   name: Analizza foto alimento
-  description: Analizza con Gemini una foto alimentare presente nel filesystem di Home Assistant e la salva nell'archivio.
+  description: Analizza con Gemini una foto alimentare presente nel filesystem di Home Assistant e la salva nel magazzino oppure nella coda Da verificare.
   fields:
     image_path:
       name: Percorso immagine
@@ -23,22 +23,62 @@ scan_image:
               value: dispensa
     notify:
       name: Notifica
-      description: Mostra una notifica persistente con il risultato.
+      description: Mostra una notifica con il risultato.
       required: false
       selector:
         boolean:
 
-remove_product:
-  name: Elimina prodotto
-  description: Elimina un singolo prodotto dall'archivio usando il suo ID.
+consume_product:
+  name: Consuma prodotto
+  description: Toglie una o più unità consumabili da un lotto senza eliminarlo completamente.
   fields:
     product_id:
-      name: ID prodotto
-      description: ID univoco del prodotto salvato nell'archivio.
+      name: ID lotto
+      description: ID univoco del lotto in magazzino.
+      required: true
+      selector:
+        text:
+    amount:
+      name: Quantità da togliere
+      description: Numero di unità consumabili da rimuovere.
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 1000
+          mode: box
+
+set_stock:
+  name: Correggi quantità
+  description: Imposta manualmente il numero reale di unità disponibili per un lotto.
+  fields:
+    product_id:
+      name: ID lotto
+      required: true
+      selector:
+        text:
+    amount:
+      name: Quantità reale
+      description: Usa 0 per eliminare il lotto.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 10000
+          mode: box
+
+remove_product:
+  name: Elimina lotto
+  description: Elimina completamente un lotto dal magazzino usando il suo ID.
+  fields:
+    product_id:
+      name: ID lotto
+      description: ID univoco del lotto salvato nel magazzino.
       required: true
       selector:
         text:
 
 clear_archive:
-  name: Svuota archivio
-  description: Elimina tutti i prodotti salvati nell'archivio Food Scanner.
+  name: Svuota magazzino
+  description: Elimina tutti i prodotti salvati in Food Scanner.
