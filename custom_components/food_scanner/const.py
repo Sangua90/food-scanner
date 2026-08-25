@@ -15,5 +15,6 @@ DEFAULT_EXPIRY_NOTIFY_SERVICE = ""
 
 SERVICE_SCAN_IMAGE = "scan_image"
 SERVICE_CONSUME_PRODUCT = "consume_product"
+SERVICE_SET_STOCK = "set_stock"
 SERVICE_REMOVE_PRODUCT = "remove_product"
 SERVICE_CLEAR_ARCHIVE = "clear_archive"
