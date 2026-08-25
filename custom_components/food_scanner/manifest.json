@@ -1,7 +1,7 @@
 {
   "domain": "food_scanner",
   "name": "HomeStock",
-  "version": "1.4.5",
+  "version": "1.4.6",
   "documentation": "https://github.com/Sangua90/food-scanner",
   "issue_tracker": "https://github.com/Sangua90/food-scanner/issues",
   "codeowners": ["@Sangua90"],
