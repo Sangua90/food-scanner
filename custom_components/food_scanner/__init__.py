@@ -17,6 +17,7 @@ from .history import get_history
 from .review import get_review_queue
 from .scan_api import FoodScannerDashboardScanView
 from .service import async_setup_services
+from .units import async_install_standard_units
 
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
@@ -36,6 +37,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not runtime.get("archive_loaded"):
         await archive.async_load()
         runtime["archive_loaded"] = True
+    await async_install_standard_units(archive)
 
     review_queue = get_review_queue(hass)
     if not runtime.get("review_queue_loaded"):
