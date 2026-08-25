@@ -12,13 +12,15 @@ from .archive import get_archive
 from .archive_api import FoodScannerArchiveView
 from .const import DOMAIN
 from .expiry import ExpiryNotifier
+from .export_api import FoodScannerExportView
+from .history import get_history
 from .review import get_review_queue
 from .service import async_setup_services
 
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
 PANEL_STATIC_URL = "/food_scanner_static"
-PANEL_VERSION = "1.0.0"
+PANEL_VERSION = "1.1.0"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -27,7 +29,6 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = entry
-
     runtime = hass.data.setdefault(RUNTIME_KEY, {})
 
     archive = get_archive(hass)
@@ -40,6 +41,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await review_queue.async_load()
         runtime["review_queue_loaded"] = True
 
+    history = get_history(hass)
+    if not runtime.get("history_loaded"):
+        await history.async_load()
+        runtime["history_loaded"] = True
+
     await async_setup_services(hass)
 
     if not runtime.get("upload_view_registered"):
@@ -50,16 +56,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.http.register_view(FoodScannerArchiveView)
         runtime["archive_view_registered"] = True
 
+    if not runtime.get("export_view_registered"):
+        hass.http.register_view(FoodScannerExportView)
+        runtime["export_view_registered"] = True
+
     if not runtime.get("panel_static_registered"):
-        await hass.http.async_register_static_paths(
-            [
-                StaticPathConfig(
-                    PANEL_STATIC_URL,
-                    str(Path(__file__).parent / "www"),
-                    cache_headers=False,
-                )
-            ]
-        )
+        await hass.http.async_register_static_paths([
+            StaticPathConfig(
+                PANEL_STATIC_URL,
+                str(Path(__file__).parent / "www"),
+                cache_headers=False,
+            )
+        ])
         runtime["panel_static_registered"] = True
 
     if not frontend.async_panel_exists(hass, PANEL_URL_PATH):
