@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
+import logging
 from http import HTTPStatus
 
 import aiohttp
+import zxingcpp
+from PIL import Image, ImageOps
 from homeassistant.components.http import KEY_HASS
 from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.exceptions import HomeAssistantError
@@ -14,6 +18,7 @@ from .const import CONF_API_KEY, CONF_MODEL, DEFAULT_MODEL, DOMAIN
 from .consumables import VALID_LOCATIONS, get_consumables
 from .openproductsfacts import async_lookup_product
 
+_LOGGER = logging.getLogger(__name__)
 SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 PROMPT = """Analizza questa foto di un consumabile domestico NON alimentare.
@@ -31,6 +36,41 @@ def _entry(hass):
     if not entries:
         raise HomeAssistantError("HomeStock non configurato.")
     return next(iter(entries.values()))
+
+
+def _decode_image(data: dict) -> tuple[bytes, str]:
+    mime_type = str(data.get("mime_type") or "image/jpeg").lower()
+    if mime_type not in SUPPORTED_MIME_TYPES:
+        raise ValueError("Formato foto non supportato")
+    try:
+        image_bytes = base64.b64decode(str(data.get("image_data") or ""), validate=True)
+    except (ValueError, TypeError) as err:
+        raise ValueError("Foto non valida") from err
+    if not image_bytes or len(image_bytes) > MAX_IMAGE_BYTES:
+        raise ValueError("Foto vuota o troppo grande")
+    return image_bytes, mime_type
+
+
+def _decode_barcode(image_bytes: bytes) -> str | None:
+    """Decode EAN/UPC/other numeric retail barcodes without browser APIs."""
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            results = zxingcpp.read_barcodes(image, try_rotate=True, try_downscale=True, try_invert=True)
+    except Exception:
+        _LOGGER.debug("HomeStock: impossibile decodificare l'immagine barcode", exc_info=True)
+        return None
+
+    candidates: list[str] = []
+    for result in results:
+        value = "".join(ch for ch in str(getattr(result, "text", "")) if ch.isdigit())
+        if 8 <= len(value) <= 14:
+            candidates.append(value)
+    if not candidates:
+        return None
+    # Prefer standard retail lengths when multiple symbols are visible.
+    candidates.sort(key=lambda value: (len(value) not in {8, 12, 13, 14}, abs(len(value) - 13)))
+    return candidates[0]
 
 
 async def _analyze(hass, image_bytes: bytes, mime_type: str) -> dict:
@@ -96,6 +136,21 @@ class FoodScannerConsumablesView(HomeAssistantView):
 
         action = str(data.get("action") or "").strip().lower()
         try:
+            if action == "scan_barcode":
+                image_bytes, _mime_type = _decode_image(data)
+                barcode = await hass.async_add_executor_job(_decode_barcode, image_bytes)
+                if not barcode:
+                    return self.json({"success": True, "barcode_read": False, "found": False})
+                product = await async_lookup_product(hass, barcode)
+                _LOGGER.debug("HomeStock barcode %s: database_found=%s", barcode, product is not None)
+                return self.json({
+                    "success": True,
+                    "barcode_read": True,
+                    "barcode": barcode,
+                    "found": product is not None,
+                    "product": product,
+                })
+
             if action == "lookup_barcode":
                 barcode = "".join(ch for ch in str(data.get("barcode") or "") if ch.isdigit())
                 if len(barcode) < 8 or len(barcode) > 14:
@@ -127,15 +182,7 @@ class FoodScannerConsumablesView(HomeAssistantView):
                 location = str(data.get("location") or "magazzino").strip().lower()
                 if location not in VALID_LOCATIONS:
                     return self.json_message("Posizione consumabile non valida", status_code=HTTPStatus.BAD_REQUEST)
-                mime_type = str(data.get("mime_type") or "image/jpeg").lower()
-                if mime_type not in SUPPORTED_MIME_TYPES:
-                    return self.json_message("Formato foto non supportato", status_code=HTTPStatus.BAD_REQUEST)
-                try:
-                    image_bytes = base64.b64decode(str(data.get("image_data") or ""), validate=True)
-                except (ValueError, TypeError):
-                    return self.json_message("Foto non valida", status_code=HTTPStatus.BAD_REQUEST)
-                if not image_bytes or len(image_bytes) > MAX_IMAGE_BYTES:
-                    return self.json_message("Foto vuota o troppo grande", status_code=HTTPStatus.BAD_REQUEST)
+                image_bytes, mime_type = _decode_image(data)
                 detected = await _analyze(hass, image_bytes, mime_type)
                 detected["stock_units"] = detected.get("units_per_package", 1)
                 detected["location"] = location
@@ -145,6 +192,10 @@ class FoodScannerConsumablesView(HomeAssistantView):
                 return self.json({"success": True, "item": item, "detected": detected, "new_product": created, "source": "gemini"})
 
         except (ValueError, HomeAssistantError) as err:
+            _LOGGER.warning("HomeStock consumables action %s failed: %s", action, err)
             return self.json_message(str(err), status_code=HTTPStatus.BAD_REQUEST)
+        except Exception as err:
+            _LOGGER.exception("HomeStock unexpected consumables error in action %s", action)
+            return self.json_message(f"Errore interno HomeStock: {type(err).__name__}", status_code=HTTPStatus.INTERNAL_SERVER_ERROR)
 
         return self.json_message("Azione non valida", status_code=HTTPStatus.BAD_REQUEST)
