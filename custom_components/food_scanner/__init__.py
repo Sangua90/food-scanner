@@ -20,6 +20,7 @@ from .units import async_install_standard_units
 RUNTIME_KEY=f"{DOMAIN}_runtime";PANEL_URL_PATH="food-scanner";PANEL_STATIC_URL="/food_scanner_static";PANEL_VERSION="1.3.0"
 async def async_setup(hass:HomeAssistant,config:dict)->bool:return True
 async def async_setup_entry(hass:HomeAssistant,entry:ConfigEntry)->bool:
+ if entry.title=="Food Scanner":hass.config_entries.async_update_entry(entry,title="HomeStock")
  hass.data.setdefault(DOMAIN,{})[entry.entry_id]=entry;runtime=hass.data.setdefault(RUNTIME_KEY,{})
  archive=get_archive(hass)
  if not runtime.get("archive_loaded"):await archive.async_load();runtime["archive_loaded"]=True
