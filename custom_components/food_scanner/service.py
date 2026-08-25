@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import base64
 import json
+import re
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 import aiohttp
 import voluptuous as vol
-from homeassistant.components.persistent_notification import async_create as async_create_persistent_notification
+from homeassistant.components.persistent_notification import (
+    async_create as async_create_persistent_notification,
+    async_dismiss,
+)
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -70,6 +75,7 @@ SUPPORTED_MIME_TYPES = {
 }
 VALID_LOCATIONS = {"frigo", "freezer", "dispensa"}
 MIN_READY_CONFIDENCE = 65
+MULTIPACK_RE = re.compile(r"\b\d+\s*[x×]\s*\d+", re.IGNORECASE)
 
 
 def _entry_settings(entry):
@@ -128,8 +134,24 @@ def _is_inventory_ready(food: dict[str, Any]) -> bool:
     """Applica controlli minimi anche se il modello è troppo ottimista."""
     if not food.get("product_name"):
         return False
-    if not food.get("expiry_date"):
+
+    raw_expiry = str(food.get("expiry_date") or "").strip()
+    if not raw_expiry:
         return False
+    try:
+        date.fromisoformat(raw_expiry)
+    except ValueError:
+        return False
+
+    quantity = str(food.get("quantity") or "")
+    if MULTIPACK_RE.search(quantity) and int(food.get("units_per_package") or 1) <= 1:
+        food["needs_more_photo"] = True
+        if "units_per_package" not in food["missing_fields"]:
+            food["missing_fields"].append("units_per_package")
+        if not food.get("photo_request"):
+            food["photo_request"] = "Fotografa il lato dove si legge chiaramente quante unità contiene la confezione."
+        return False
+
     if food.get("needs_more_photo"):
         return False
     if not food.get("inventory_ready"):
@@ -201,7 +223,6 @@ async def _send_review_alert(
                 blocking=False,
             )
         except Exception:
-            # La notifica persistente sopra resta comunque disponibile.
             pass
 
 
@@ -301,6 +322,7 @@ async def async_analyze_image_bytes(
         archive_item, created, added_units = await get_archive(hass).async_add(food, location)
         if review_id:
             await get_review_queue(hass).async_remove(review_id)
+            async_dismiss(hass, f"food_scanner_review_{review_id}")
     else:
         pending_item = await get_review_queue(hass).async_upsert(food, location, review_id)
         review_id = pending_item["id"]
@@ -384,6 +406,7 @@ async def async_confirm_review(hass: HomeAssistant, review_id: str) -> dict[str,
         pending.get("location"),
     )
     await get_review_queue(hass).async_remove(review_id)
+    async_dismiss(hass, f"food_scanner_review_{review_id}")
     return {"item": item, "new_lot": created, "added_units": added_units}
 
 
