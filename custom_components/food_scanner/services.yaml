@@ -1,6 +1,6 @@
 scan_image:
   name: Analizza foto alimento
-  description: Analizza con Gemini una foto alimentare presente nel filesystem di Home Assistant.
+  description: Analizza con Gemini una foto alimentare presente nel filesystem di Home Assistant e la salva nell'archivio.
   fields:
     image_path:
       name: Percorso immagine
@@ -8,9 +8,37 @@ scan_image:
       required: true
       selector:
         text:
+    location:
+      name: Posizione
+      description: Dove viene conservato il prodotto.
+      required: false
+      selector:
+        select:
+          options:
+            - label: Frigo
+              value: frigo
+            - label: Freezer
+              value: freezer
+            - label: Dispensa
+              value: dispensa
     notify:
       name: Notifica
       description: Mostra una notifica persistente con il risultato.
       required: false
       selector:
         boolean:
+
+remove_product:
+  name: Elimina prodotto
+  description: Elimina un singolo prodotto dall'archivio usando il suo ID.
+  fields:
+    product_id:
+      name: ID prodotto
+      description: ID univoco del prodotto salvato nell'archivio.
+      required: true
+      selector:
+        text:
+
+clear_archive:
+  name: Svuota archivio
+  description: Elimina tutti i prodotti salvati nell'archivio Food Scanner.
