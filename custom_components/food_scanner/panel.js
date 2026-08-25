@@ -100,6 +100,54 @@ class FoodScannerPanel extends HTMLElement {
     } catch (err) { alert(err?.message || err); }
   }
 
+  async _editItem(id) {
+    const item = this._items.find(x => x.id === id);
+    if (!item) return alert("Prodotto non trovato");
+
+    const productName = prompt("Nome prodotto:", item.product_name || "");
+    if (productName === null) return;
+    const brand = prompt("Marca (può essere vuota):", item.brand || "");
+    if (brand === null) return;
+    const quantity = prompt("Formato commerciale (es. 3 x 80 g, 1 L):", item.quantity || "");
+    if (quantity === null) return;
+    const barcode = prompt("EAN / codice a barre (può essere vuoto):", item.barcode || "");
+    if (barcode === null) return;
+    const expiryDate = prompt("Scadenza nel formato YYYY-MM-DD (vuoto = nessuna):", item.expiry_date || "");
+    if (expiryDate === null) return;
+    const expiryType = prompt("Tipo: scadenza oppure TMC (può essere vuoto):", item.expiry_type || "");
+    if (expiryType === null) return;
+    const location = prompt("Posizione: frigo, freezer o dispensa:", item.location || "frigo");
+    if (location === null) return;
+    const packageType = prompt("Tipo confezione (es. scatola, bottiglia, busta):", item.package_type || "confezione");
+    if (packageType === null) return;
+    const unitName = prompt("Nome unità consumabile (es. merendine, lattine, bottiglie):", item.unit_name || "unità");
+    if (unitName === null) return;
+    const unitsValue = prompt("Quante unità contiene UNA confezione?", String(item.units_per_package || 1));
+    if (unitsValue === null) return;
+    const unitsPerPackage = Number.parseInt(unitsValue, 10);
+    if (!Number.isInteger(unitsPerPackage) || unitsPerPackage < 1) return alert("Unità per confezione non valide");
+
+    try {
+      await this._hass.callApi("POST", "food_scanner/archive", {
+        action: "update_item",
+        id,
+        changes: {
+          product_name: productName.trim(),
+          brand: brand.trim(),
+          quantity: quantity.trim(),
+          barcode: barcode.trim(),
+          expiry_date: expiryDate.trim(),
+          expiry_type: expiryType.trim(),
+          location: location.trim().toLowerCase(),
+          package_type: packageType.trim(),
+          unit_name: unitName.trim(),
+          units_per_package: unitsPerPackage,
+        },
+      });
+      await this._load();
+    } catch (err) { alert(err?.message || err); }
+  }
+
   async _deleteLot(id, name) {
     if (!confirm(`Eliminare completamente il lotto “${name}”?`)) return;
     try {
@@ -152,7 +200,7 @@ class FoodScannerPanel extends HTMLElement {
   }
 
   async _confirmReview(id) {
-    if (!confirm("Salvare comunque i dati letti? Potrai correggere la quantità dopo.")) return;
+    if (!confirm("Salvare comunque i dati letti? Potrai correggerli dopo.")) return;
     this._busyReview = id;
     this._render();
     try {
@@ -189,6 +237,7 @@ class FoodScannerPanel extends HTMLElement {
     root.querySelectorAll("[data-action='minus2']").forEach(btn => btn.onclick = () => this._consume(btn.dataset.id, 2));
     root.querySelectorAll("[data-action='consume']").forEach(btn => btn.onclick = () => this._consumeCustom(btn.dataset.id, Number(btn.dataset.max)));
     root.querySelectorAll("[data-action='set']").forEach(btn => btn.onclick = () => this._setStock(btn.dataset.id, Number(btn.dataset.current)));
+    root.querySelectorAll("[data-action='edit']").forEach(btn => btn.onclick = () => this._editItem(btn.dataset.id));
     root.querySelectorAll("[data-action='delete']").forEach(btn => btn.onclick = () => this._deleteLot(btn.dataset.id, btn.dataset.name));
 
     root.querySelectorAll("[data-action='retry']").forEach(btn => btn.onclick = () => {
@@ -270,6 +319,7 @@ class FoodScannerPanel extends HTMLElement {
           <button ${minus2Disabled} data-action="minus2" data-id="${this._esc(item.id)}">−2</button>
           <button data-action="consume" data-id="${this._esc(item.id)}" data-max="${stock}">Consuma…</button>
           <button class="secondary" data-action="set" data-id="${this._esc(item.id)}" data-current="${stock}">Correggi quantità</button>
+          <button class="secondary" data-action="edit" data-id="${this._esc(item.id)}">Modifica dati</button>
           <button class="dangerBtn" data-action="delete" data-id="${this._esc(item.id)}" data-name="${this._esc(item.product_name || "Prodotto")}">Elimina lotto</button>
         </div>
       </article>`;
