@@ -1,10 +1,10 @@
 {
-  "title": "Food Scanner",
+  "title": "HomeStock",
   "config": {
     "step": {
       "user": {
-        "title": "Configura Food Scanner",
-        "description": "Inserisci la API key di Google Gemini.",
+        "title": "Configura HomeStock",
+        "description": "Configura Gemini per il riconoscimento intelligente di alimenti e consumabili.",
         "data": {
           "api_key": "API key Gemini",
           "model": "Modello Gemini"
@@ -15,8 +15,8 @@
   "options": {
     "step": {
       "init": {
-        "title": "Opzioni Food Scanner",
-        "description": "Configura analisi e notifiche. L'anticipo scadenza è espresso in giorni.",
+        "title": "Opzioni HomeStock",
+        "description": "Configura analisi e notifiche delle scadenze.",
         "data": {
           "model": "Modello Gemini",
           "notify": "Notifica dopo la scansione",
