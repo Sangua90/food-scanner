@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .archive import get_archive
 from .const import (
     DOMAIN,
     CONF_API_KEY,
@@ -34,6 +35,8 @@ Interpreta correttamente le date italiane GG/MM/AAAA e GG/MM/AA.
 
 SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 VALID_LOCATIONS = {"frigo", "freezer", "dispensa"}
+SERVICE_REMOVE_PRODUCT = "remove_product"
+SERVICE_CLEAR_ARCHIVE = "clear_archive"
 
 
 def _entry_settings(entry):
@@ -65,7 +68,7 @@ async def async_analyze_image_bytes(
     notify: bool | None = None,
     location: str | None = None,
 ) -> dict:
-    """Analizza bytes immagine con Gemini e restituisce i dati del prodotto."""
+    """Analizza bytes immagine con Gemini e salva il prodotto in archivio."""
     if not image_bytes:
         raise HomeAssistantError("La foto ricevuta è vuota.")
     if mime_type not in SUPPORTED_MIME_TYPES:
@@ -116,9 +119,15 @@ async def async_analyze_image_bytes(
         raise HomeAssistantError(f"Risposta Gemini non valida: {err}") from err
 
     state = food.get("product_name") or "Prodotto non riconosciuto"
+    archive_item = None
+    if food.get("product_name"):
+        archive_item = await get_archive(hass).async_add(food, location)
+
     attributes = {"friendly_name": "Food Scanner - Ultimo risultato", "model": model, **food}
     if location:
         attributes["location"] = location
+    if archive_item:
+        attributes["archive_id"] = archive_item["id"]
 
     hass.states.async_set(
         "sensor.food_scanner_last_result",
@@ -138,6 +147,8 @@ async def async_analyze_image_bytes(
         lines.append(f"Scadenza/TMC: **{food.get('expiry_date') or 'non rilevata'}**")
         if food.get("barcode"):
             lines.append(f"EAN: `{food['barcode']}`")
+        if archive_item:
+            lines.append("Salvato in archivio: **sì**")
         if food.get("confidence") is not None:
             lines.append(f"Confidenza: {food['confidence']}%")
         async_create_persistent_notification(
@@ -150,13 +161,12 @@ async def async_analyze_image_bytes(
     response_data = {"success": True, "model": model, **food}
     if location:
         response_data["location"] = location
+    if archive_item:
+        response_data["archive_id"] = archive_item["id"]
     return response_data
 
 
 async def async_setup_services(hass: HomeAssistant) -> None:
-    if hass.services.has_service(DOMAIN, SERVICE_SCAN_IMAGE):
-        return
-
     async def handle_scan(call: ServiceCall) -> None:
         try:
             path = Path(call.data["image_path"])
@@ -181,11 +191,28 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         except Exception as err:
             raise HomeAssistantError(f"Errore interno Food Scanner: {type(err).__name__}: {err}") from err
 
-    schema = vol.Schema(
-        {
-            vol.Required("image_path"): str,
-            vol.Optional(CONF_NOTIFY): bool,
-            vol.Optional("location"): vol.In(["frigo", "freezer", "dispensa"]),
-        }
-    )
-    hass.services.async_register(DOMAIN, SERVICE_SCAN_IMAGE, handle_scan, schema)
+    async def handle_remove(call: ServiceCall) -> None:
+        product_id = call.data["product_id"]
+        removed = await get_archive(hass).async_remove(product_id)
+        if not removed:
+            raise HomeAssistantError("Prodotto non trovato nell'archivio.")
+
+    async def handle_clear(call: ServiceCall) -> None:
+        await get_archive(hass).async_clear()
+
+    if not hass.services.has_service(DOMAIN, SERVICE_SCAN_IMAGE):
+        scan_schema = vol.Schema(
+            {
+                vol.Required("image_path"): str,
+                vol.Optional(CONF_NOTIFY): bool,
+                vol.Optional("location"): vol.In(["frigo", "freezer", "dispensa"]),
+            }
+        )
+        hass.services.async_register(DOMAIN, SERVICE_SCAN_IMAGE, handle_scan, scan_schema)
+
+    if not hass.services.has_service(DOMAIN, SERVICE_REMOVE_PRODUCT):
+        remove_schema = vol.Schema({vol.Required("product_id"): str})
+        hass.services.async_register(DOMAIN, SERVICE_REMOVE_PRODUCT, handle_remove, remove_schema)
+
+    if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_ARCHIVE):
+        hass.services.async_register(DOMAIN, SERVICE_CLEAR_ARCHIVE, handle_clear, vol.Schema({}))
