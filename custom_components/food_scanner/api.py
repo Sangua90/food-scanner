@@ -14,7 +14,7 @@ from .service import async_analyze_image_bytes
 _LOGGER = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
-SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
 VALID_LOCATIONS = {"frigo", "freezer", "dispensa"}
 
 
@@ -27,6 +27,12 @@ def _detect_mime(image_bytes: bytes, declared: str) -> str | None:
         return "image/png"
     if len(image_bytes) >= 12 and image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
         return "image/webp"
+    if len(image_bytes) >= 12 and image_bytes[4:8] == b"ftyp":
+        brand = image_bytes[8:12]
+        if brand in {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis"}:
+            return "image/heic"
+        if brand in {b"mif1", b"msf1"}:
+            return "image/heif"
     return None
 
 
@@ -72,7 +78,7 @@ class FoodScannerUploadView(HomeAssistantView):
         mime_type = _detect_mime(image_bytes, request.content_type.lower())
         if mime_type is None:
             return self.json_message(
-                "Formato non supportato: usa JPEG, PNG o WEBP",
+                "Formato non supportato: usa JPEG, PNG, WEBP, HEIC o HEIF",
                 status_code=HTTPStatus.BAD_REQUEST,
             )
 
