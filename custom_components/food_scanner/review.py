@@ -4,6 +4,7 @@ import asyncio
 import uuid
 from typing import Any
 
+from homeassistant.components.persistent_notification import async_dismiss
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -75,6 +76,7 @@ class ReviewQueue:
             if removed:
                 await self._async_save()
         if removed:
+            async_dismiss(self.hass, f"food_scanner_review_{review_id}")
             self._update_sensor()
         return removed
 
