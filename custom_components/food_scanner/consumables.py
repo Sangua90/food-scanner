@@ -55,11 +55,15 @@ class ConsumablesStore:
         if isinstance(data, dict):
             self._items = [dict(x) for x in data.get("items", []) if isinstance(x, dict)]
             self._history = [dict(x) for x in data.get("history", []) if isinstance(x, dict)][-5000:]
+        cleaned = []
         for item in self._items:
             item["unit_name"] = _unit(item.get("unit_name"))
             item["stock_units"] = max(0, int(item.get("stock_units", 1) or 0))
             item.setdefault("category", "Casa")
             item["location"] = _location(item.get("location"))
+            if item["stock_units"] > 0:
+                cleaned.append(item)
+        self._items = cleaned
         await self._async_save()
 
     async def _async_save(self) -> None:
@@ -109,8 +113,14 @@ class ConsumablesStore:
             if item is None:return None
             current=int(item.get("stock_units",0) or 0)
             if amount>current:raise ValueError(f"Disponibili solo {current} {item.get('unit_name') or 'Pezzi'}.")
-            item["stock_units"]=current-amount;item["updated_at"]=_now();result=dict(item)
-            self._history.append({"type":"consumed","at":item["updated_at"],"product_id":item["id"],"product_name":item.get("product_name"),"amount":amount,"unit_name":item.get("unit_name")})
+            now=_now()
+            remaining=current-amount
+            self._history.append({"type":"consumed","at":now,"product_id":item["id"],"product_name":item.get("product_name"),"amount":amount,"unit_name":item.get("unit_name")})
+            if remaining <= 0:
+                result={**item,"stock_units":0,"updated_at":now,"depleted":True}
+                self._items=[x for x in self._items if x.get("id")!=product_id]
+            else:
+                item["stock_units"]=remaining;item["updated_at"]=now;result=dict(item)
             await self._async_save()
         return result
 
@@ -122,7 +132,13 @@ class ConsumablesStore:
                 if key in changes:item[key]=str(changes.get(key) or "").strip() or None
             if not item.get("product_name"):raise ValueError("Il nome del consumabile non può essere vuoto.")
             if "unit_name" in changes:item["unit_name"]=_unit(changes.get("unit_name"))
-            if "stock_units" in changes:item["stock_units"]=max(0,int(changes.get("stock_units") or 0))
+            if "stock_units" in changes:
+                value=max(0,int(changes.get("stock_units") or 0))
+                if value == 0:
+                    self._items=[x for x in self._items if x.get("id")!=product_id]
+                    await self._async_save()
+                    return {**item,"stock_units":0,"depleted":True}
+                item["stock_units"]=value
             if "min_stock" in changes:item["min_stock"]=max(0,int(changes.get("min_stock") or 0))
             if "location" in changes:item["location"]=_location(changes.get("location"))
             item["updated_at"]=_now();await self._async_save();return dict(item)
