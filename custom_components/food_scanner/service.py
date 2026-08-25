@@ -32,11 +32,102 @@ Interpreta correttamente le date italiane GG/MM/AAAA e GG/MM/AA.
 \"da consumarsi entro\" indica scadenza; \"da consumarsi preferibilmente entro\" indica TMC.
 """
 
+SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+
 
 def _entry_settings(entry):
     model = entry.options.get(CONF_MODEL, entry.data.get(CONF_MODEL, DEFAULT_MODEL))
     notify = entry.options.get(CONF_NOTIFY, DEFAULT_NOTIFY)
     return model, notify
+
+
+def _get_entry(hass: HomeAssistant):
+    entries = hass.data.get(DOMAIN, {})
+    if not entries:
+        raise HomeAssistantError("Food Scanner non configurato.")
+    return next(iter(entries.values()))
+
+
+async def async_analyze_image_bytes(
+    hass: HomeAssistant,
+    image_bytes: bytes,
+    mime_type: str,
+    notify: bool | None = None,
+) -> dict:
+    """Analizza bytes immagine con Gemini e restituisce i dati del prodotto."""
+    if not image_bytes:
+        raise HomeAssistantError("La foto ricevuta è vuota.")
+    if mime_type not in SUPPORTED_MIME_TYPES:
+        raise HomeAssistantError("Formato immagine non supportato. Usa JPG, PNG o WEBP.")
+
+    entry = _get_entry(hass)
+    api_key = entry.data.get(CONF_API_KEY)
+    if not api_key:
+        raise HomeAssistantError("API key Gemini mancante.")
+
+    model, default_notify = _entry_settings(entry)
+    should_notify = default_notify if notify is None else notify
+
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    payload = {
+        "contents": [{"parts": [
+            {"inline_data": {"mime_type": mime_type, "data": encoded}},
+            {"text": PROMPT},
+        ]}],
+        "generationConfig": {
+            "temperature": 0,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    session = async_get_clientsession(hass)
+    try:
+        async with session.post(
+            url,
+            headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=60),
+        ) as response:
+            body = await response.text()
+            if response.status >= 400:
+                raise HomeAssistantError(f"Gemini API {response.status}: {body[:500]}")
+    except aiohttp.ClientError as err:
+        raise HomeAssistantError(f"Errore di connessione a Gemini: {err}") from err
+
+    try:
+        result = json.loads(body)
+        text = result["candidates"][0]["content"]["parts"][0]["text"]
+        food = json.loads(text)
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as err:
+        raise HomeAssistantError(f"Risposta Gemini non valida: {err}") from err
+
+    state = food.get("product_name") or "Prodotto non riconosciuto"
+    hass.states.async_set(
+        "sensor.food_scanner_last_result",
+        state,
+        {"friendly_name": "Food Scanner - Ultimo risultato", "model": model, **food},
+    )
+
+    if should_notify:
+        lines = [f"**{state}**"]
+        if food.get("brand"):
+            lines[0] += f" — {food['brand']}"
+        if food.get("quantity"):
+            lines.append(str(food["quantity"]))
+        lines.append(f"Scadenza/TMC: **{food.get('expiry_date') or 'non rilevata'}**")
+        if food.get("barcode"):
+            lines.append(f"EAN: `{food['barcode']}`")
+        if food.get("confidence") is not None:
+            lines.append(f"Confidenza: {food['confidence']}%")
+        async_create_persistent_notification(
+            hass,
+            "\n".join(lines),
+            title="📦 Food Scanner",
+            notification_id="food_scanner_last",
+        )
+
+    return {"success": True, "model": model, **food}
 
 
 async def async_setup_services(hass: HomeAssistant) -> None:
@@ -45,92 +136,22 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
     async def handle_scan(call: ServiceCall) -> None:
         try:
-            entries = hass.data.get(DOMAIN, {})
-            if not entries:
-                raise HomeAssistantError("Food Scanner non configurato.")
-
-            entry = next(iter(entries.values()))
-            api_key = entry.data.get(CONF_API_KEY)
-            if not api_key:
-                raise HomeAssistantError("API key Gemini mancante.")
-
-            model, default_notify = _entry_settings(entry)
-            notify = call.data.get(CONF_NOTIFY, default_notify)
-
             path = Path(call.data["image_path"])
             if not path.exists() or not path.is_file():
                 raise HomeAssistantError(f"Immagine non trovata: {path}")
 
             suffix = path.suffix.lower()
-            if suffix in (".jpg", ".jpeg"):
-                mime = "image/jpeg"
-            elif suffix == ".png":
-                mime = "image/png"
-            elif suffix == ".webp":
-                mime = "image/webp"
-            else:
+            mime_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+            mime_type = mime_map.get(suffix)
+            if mime_type is None:
                 raise HomeAssistantError("Formato immagine non supportato. Usa JPG, PNG o WEBP.")
 
-            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-            payload = {
-                "contents": [{"parts": [
-                    {"inline_data": {"mime_type": mime, "data": encoded}},
-                    {"text": PROMPT},
-                ]}],
-                "generationConfig": {
-                    "temperature": 0,
-                    "responseMimeType": "application/json",
-                },
-            }
-
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-            session = async_get_clientsession(hass)
-            try:
-                async with session.post(
-                    url,
-                    headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=60),
-                ) as response:
-                    body = await response.text()
-                    if response.status >= 400:
-                        raise HomeAssistantError(f"Gemini API {response.status}: {body[:500]}")
-            except aiohttp.ClientError as err:
-                raise HomeAssistantError(f"Errore di connessione a Gemini: {err}") from err
-
-            try:
-                result = json.loads(body)
-                text = result["candidates"][0]["content"]["parts"][0]["text"]
-                food = json.loads(text)
-            except (KeyError, IndexError, TypeError, json.JSONDecodeError) as err:
-                raise HomeAssistantError(f"Risposta Gemini non valida: {err}") from err
-
-            state = food.get("product_name") or "Prodotto non riconosciuto"
-            hass.states.async_set(
-                "sensor.food_scanner_last_result",
-                state,
-                {"friendly_name": "Food Scanner - Ultimo risultato", "model": model, **food},
+            await async_analyze_image_bytes(
+                hass,
+                path.read_bytes(),
+                mime_type,
+                call.data.get(CONF_NOTIFY),
             )
-
-            if notify:
-                lines = [f"**{state}**"]
-                if food.get("brand"):
-                    lines[0] += f" — {food['brand']}"
-                if food.get("quantity"):
-                    lines.append(str(food["quantity"]))
-                lines.append(f"Scadenza/TMC: **{food.get('expiry_date') or 'non rilevata'}**")
-                if food.get("barcode"):
-                    lines.append(f"EAN: `{food['barcode']}`")
-                if food.get("confidence") is not None:
-                    lines.append(f"Confidenza: {food['confidence']}%")
-
-                async_create_persistent_notification(
-                    hass,
-                    "\n".join(lines),
-                    title="📦 Food Scanner",
-                    notification_id="food_scanner_last",
-                )
-
         except HomeAssistantError:
             raise
         except Exception as err:
