@@ -55,7 +55,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             [
                 StaticPathConfig(
                     PANEL_STATIC_URL,
-                    str(Path(__file__).parent),
+                    str(Path(__file__).parent / "www"),
                     cache_headers=False,
                 )
             ]
@@ -71,7 +71,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             sidebar_icon="mdi:food-apple-outline",
             module_url=f"{PANEL_STATIC_URL}/panel.js?v={PANEL_VERSION}",
             require_admin=False,
-            config_panel_domain=DOMAIN,
         )
     runtime["panel_registered"] = True
 
