@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import base64
-import io
 import json
 import logging
 from http import HTTPStatus
 
 import aiohttp
-import zxingcpp
-from PIL import Image, ImageOps
 from homeassistant.components.http import KEY_HASS
 from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.exceptions import HomeAssistantError
@@ -29,6 +26,10 @@ unit_name deve essere ESATTAMENTE una tra: Pezzi, Bottiglie, Lattine, Vasetti, C
 units_per_package è il numero di unità realmente consumabili nella confezione fotografata.
 Non inventare barcode o quantità non leggibili. confidence è 0-100.
 """
+BARCODE_PROMPT = """Leggi SOLO il codice a barre visibile nell'immagine.
+Restituisci esclusivamente JSON valido nel formato {"barcode":"1234567890123"}.
+Se non riesci a leggere con sicurezza un codice numerico EAN/UPC/GTIN tra 8 e 14 cifre, restituisci {"barcode":null}.
+Non inventare cifre."""
 
 
 def _entry(hass):
@@ -51,29 +52,7 @@ def _decode_image(data: dict) -> tuple[bytes, str]:
     return image_bytes, mime_type
 
 
-def _decode_barcode(image_bytes: bytes) -> str | None:
-    """Decode EAN/UPC/other numeric retail barcodes without browser APIs."""
-    try:
-        with Image.open(io.BytesIO(image_bytes)) as source:
-            image = ImageOps.exif_transpose(source).convert("RGB")
-            results = zxingcpp.read_barcodes(image, try_rotate=True, try_downscale=True, try_invert=True)
-    except Exception:
-        _LOGGER.debug("HomeStock: impossibile decodificare l'immagine barcode", exc_info=True)
-        return None
-
-    candidates: list[str] = []
-    for result in results:
-        value = "".join(ch for ch in str(getattr(result, "text", "")) if ch.isdigit())
-        if 8 <= len(value) <= 14:
-            candidates.append(value)
-    if not candidates:
-        return None
-    # Prefer standard retail lengths when multiple symbols are visible.
-    candidates.sort(key=lambda value: (len(value) not in {8, 12, 13, 14}, abs(len(value) - 13)))
-    return candidates[0]
-
-
-async def _analyze(hass, image_bytes: bytes, mime_type: str) -> dict:
+async def _gemini_json(hass, image_bytes: bytes, mime_type: str, prompt: str) -> dict:
     entry = _entry(hass)
     api_key = entry.data.get(CONF_API_KEY)
     if not api_key:
@@ -82,7 +61,7 @@ async def _analyze(hass, image_bytes: bytes, mime_type: str) -> dict:
     payload = {
         "contents": [{"parts": [
             {"inline_data": {"mime_type": mime_type, "data": base64.b64encode(image_bytes).decode("ascii")}},
-            {"text": PROMPT},
+            {"text": prompt},
         ]}],
         "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
     }
@@ -107,14 +86,26 @@ async def _analyze(hass, image_bytes: bytes, mime_type: str) -> dict:
         data = json.loads(text)
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as err:
         raise HomeAssistantError(f"Risposta Gemini non valida: {err}") from err
+    if not isinstance(data, dict):
+        raise HomeAssistantError("Risposta Gemini non valida.")
+    return data
 
-    if not isinstance(data, dict) or not data.get("product_name"):
+
+async def _analyze(hass, image_bytes: bytes, mime_type: str) -> dict:
+    data = await _gemini_json(hass, image_bytes, mime_type, PROMPT)
+    if not data.get("product_name"):
         raise HomeAssistantError("Consumabile non identificato correttamente.")
     try:
         data["units_per_package"] = max(1, int(data.get("units_per_package") or 1))
     except (TypeError, ValueError):
         data["units_per_package"] = 1
     return data
+
+
+async def _read_barcode(hass, image_bytes: bytes, mime_type: str) -> str | None:
+    data = await _gemini_json(hass, image_bytes, mime_type, BARCODE_PROMPT)
+    barcode = "".join(ch for ch in str(data.get("barcode") or "") if ch.isdigit())
+    return barcode if 8 <= len(barcode) <= 14 else None
 
 
 class FoodScannerConsumablesView(HomeAssistantView):
@@ -137,8 +128,8 @@ class FoodScannerConsumablesView(HomeAssistantView):
         action = str(data.get("action") or "").strip().lower()
         try:
             if action == "scan_barcode":
-                image_bytes, _mime_type = _decode_image(data)
-                barcode = await hass.async_add_executor_job(_decode_barcode, image_bytes)
+                image_bytes, mime_type = _decode_image(data)
+                barcode = await _read_barcode(hass, image_bytes, mime_type)
                 if not barcode:
                     return self.json({"success": True, "barcode_read": False, "found": False})
                 product = await async_lookup_product(hass, barcode)
