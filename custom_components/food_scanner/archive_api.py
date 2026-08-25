@@ -145,6 +145,27 @@ class FoodScannerArchiveView(HomeAssistantView):
                 )
             return self.json({"success": True, "discarded_id": product_id})
 
+        if action == "update_item":
+            changes = data.get("changes")
+            if not isinstance(changes, dict):
+                return self.json_message(
+                    "Dati di modifica mancanti o non validi",
+                    status_code=HTTPStatus.BAD_REQUEST,
+                )
+            try:
+                result = await archive.async_update_item(product_id, changes)
+            except ValueError as err:
+                return self.json_message(
+                    str(err),
+                    status_code=HTTPStatus.BAD_REQUEST,
+                )
+            if result is None:
+                return self.json_message(
+                    "Prodotto non trovato",
+                    status_code=HTTPStatus.NOT_FOUND,
+                )
+            return self.json({"success": True, "item": result})
+
         try:
             amount = int(data.get("amount", 1))
         except (TypeError, ValueError):
