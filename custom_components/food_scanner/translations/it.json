@@ -16,10 +16,13 @@
     "step": {
       "init": {
         "title": "Opzioni Food Scanner",
-        "description": "Modifica le impostazioni senza reinstallare Food Scanner.",
+        "description": "Configura analisi e notifiche. L'anticipo scadenza è espresso in giorni.",
         "data": {
           "model": "Modello Gemini",
-          "notify": "Notifiche"
+          "notify": "Notifica dopo la scansione",
+          "expiry_notify": "Notifiche automatiche scadenze",
+          "expiry_notify_days": "Avvisa quanti giorni prima",
+          "expiry_notify_service": "Servizio notifiche telefono (facoltativo)"
         }
       }
     }
