@@ -1,12 +1,11 @@
 {
   "domain": "food_scanner",
   "name": "HomeStock",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "documentation": "https://github.com/Sangua90/food-scanner",
   "issue_tracker": "https://github.com/Sangua90/food-scanner/issues",
   "codeowners": ["@Sangua90"],
   "config_flow": true,
   "dependencies": ["persistent_notification", "http", "frontend", "panel_custom"],
-  "requirements": ["zxing-cpp==3.1.1"],
   "iot_class": "cloud_polling"
 }
