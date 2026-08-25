@@ -11,6 +11,7 @@ from .service import async_analyze_image_bytes
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+VALID_LOCATIONS = {"frigo", "freezer", "dispensa"}
 
 
 def _detect_mime(image_bytes: bytes, declared: str) -> str | None:
@@ -56,6 +57,14 @@ class FoodScannerUploadView(HomeAssistantView):
             )
 
         notify = request.query.get("notify", "1").lower() not in {"0", "false", "no"}
+        location = request.query.get("location")
+        if location is not None:
+            location = location.strip().lower()
+            if location not in VALID_LOCATIONS:
+                return self.json_message(
+                    "Posizione non valida: usa frigo, freezer o dispensa",
+                    status_code=HTTPStatus.BAD_REQUEST,
+                )
 
         try:
             result = await async_analyze_image_bytes(
@@ -63,6 +72,7 @@ class FoodScannerUploadView(HomeAssistantView):
                 image_bytes,
                 mime_type,
                 notify=notify,
+                location=location,
             )
         except HomeAssistantError as err:
             return self.json(
