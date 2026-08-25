@@ -23,15 +23,25 @@ def _norm(value: Any) -> str:
     return " ".join(str(value).strip().casefold().split())
 
 
-def _stock_count(item: dict[str, Any]) -> int:
+def _int_at_least_one(value: Any, default: int = 1) -> int:
     try:
-        return max(1, int(item.get("stock_count", 1)))
+        return max(1, int(value))
     except (TypeError, ValueError):
-        return 1
+        return default
+
+
+def _stock_units(item: dict[str, Any]) -> int:
+    if "stock_units" in item:
+        return _int_at_least_one(item.get("stock_units"))
+    return _int_at_least_one(item.get("stock_count", 1))
+
+
+def _units_per_package(food_or_item: dict[str, Any]) -> int:
+    return _int_at_least_one(food_or_item.get("units_per_package", 1))
 
 
 def _same_lot(item: dict[str, Any], food: dict[str, Any], location: str | None) -> bool:
-    """Raggruppa solo prodotti realmente compatibili nello stesso lotto."""
+    """Raggruppa solo prodotti compatibili nello stesso lotto/scadenza."""
     if _norm(item.get("location")) != _norm(location):
         return False
     if _norm(item.get("expiry_date")) != _norm(food.get("expiry_date")):
@@ -47,6 +57,7 @@ def _same_lot(item: dict[str, Any], food: dict[str, Any], location: str | None) 
     return (
         _norm(item.get("product_name")) == _norm(food.get("product_name"))
         and _norm(item.get("brand")) == _norm(food.get("brand"))
+        and _norm(item.get("unit_name")) == _norm(food.get("unit_name"))
     )
 
 
@@ -61,10 +72,7 @@ class FoodArchive:
 
     async def async_load(self) -> None:
         data = await self.store.async_load()
-        if isinstance(data, dict) and isinstance(data.get("items"), list):
-            raw_items = data["items"]
-        else:
-            raw_items = []
+        raw_items = data.get("items", []) if isinstance(data, dict) else []
 
         changed = False
         merged: list[dict[str, Any]] = []
@@ -73,25 +81,31 @@ class FoodArchive:
                 changed = True
                 continue
             item = dict(raw)
-            if "stock_count" not in item:
-                item["stock_count"] = 1
+
+            if "stock_units" not in item:
+                item["stock_units"] = _int_at_least_one(item.pop("stock_count", 1))
+                changed = True
+            if "units_per_package" not in item:
+                item["units_per_package"] = 1
+                changed = True
+            if "unit_name" not in item:
+                item["unit_name"] = "unità"
+                changed = True
+            if "package_type" not in item:
+                item["package_type"] = "confezione"
                 changed = True
             if "updated_at" not in item:
                 item["updated_at"] = item.get("added_at")
                 changed = True
 
             match = next(
-                (
-                    existing
-                    for existing in merged
-                    if _same_lot(existing, item, item.get("location"))
-                ),
+                (existing for existing in merged if _same_lot(existing, item, item.get("location"))),
                 None,
             )
             if match is None:
                 merged.append(item)
             else:
-                match["stock_count"] = _stock_count(match) + _stock_count(item)
+                match["stock_units"] = _stock_units(match) + _stock_units(item)
                 match["updated_at"] = item.get("updated_at") or match.get("updated_at")
                 changed = True
 
@@ -104,16 +118,28 @@ class FoodArchive:
         self,
         food: dict[str, Any],
         location: str | None,
-    ) -> tuple[dict[str, Any], bool]:
-        """Aggiunge una unità. Restituisce (lotto, nuovo_lotto)."""
+    ) -> tuple[dict[str, Any], bool, int]:
+        """Aggiunge una confezione scansionata e le sue unità consumabili."""
         now = dt_util.utcnow().isoformat()
+        added_units = _units_per_package(food)
+        unit_name = str(food.get("unit_name") or "unità").strip()
+        package_type = str(food.get("package_type") or "confezione").strip()
+
+        normalized_food = dict(food)
+        normalized_food["units_per_package"] = added_units
+        normalized_food["unit_name"] = unit_name
+        normalized_food["package_type"] = package_type
+
         async with self._lock:
             existing = next(
-                (item for item in self._items if _same_lot(item, food, location)),
+                (item for item in self._items if _same_lot(item, normalized_food, location)),
                 None,
             )
             if existing is not None:
-                existing["stock_count"] = _stock_count(existing) + 1
+                existing["stock_units"] = _stock_units(existing) + added_units
+                existing["units_per_package"] = added_units
+                existing["unit_name"] = unit_name
+                existing["package_type"] = package_type
                 existing["updated_at"] = now
                 if food.get("confidence") is not None:
                     existing["confidence"] = food.get("confidence")
@@ -131,7 +157,10 @@ class FoodArchive:
                     "expiry_type": food.get("expiry_type"),
                     "confidence": food.get("confidence"),
                     "location": location,
-                    "stock_count": 1,
+                    "package_type": package_type,
+                    "units_per_package": added_units,
+                    "unit_name": unit_name,
+                    "stock_units": added_units,
                     "added_at": now,
                     "updated_at": now,
                 }
@@ -141,10 +170,10 @@ class FoodArchive:
                 created = True
 
         self._update_summary_sensors()
-        return result, created
+        return result, created, added_units
 
     async def async_consume(self, product_id: str, amount: int = 1) -> dict[str, Any] | None:
-        """Rimuove alcune unità. Elimina il lotto quando arriva a zero."""
+        """Rimuove unità consumabili. Elimina il lotto solo a zero."""
         if amount < 1:
             raise ValueError("La quantità da togliere deve essere almeno 1.")
 
@@ -153,17 +182,17 @@ class FoodArchive:
             if item is None:
                 return None
 
-            current = _stock_count(item)
+            current = _stock_units(item)
             if amount > current:
-                raise ValueError(f"Disponibili solo {current} unità.")
+                raise ValueError(f"Disponibili solo {current} {item.get('unit_name') or 'unità'}.")
 
             if amount == current:
                 self._items = [x for x in self._items if x.get("id") != product_id]
                 result = dict(item)
-                result["stock_count"] = 0
+                result["stock_units"] = 0
                 result["removed"] = True
             else:
-                item["stock_count"] = current - amount
+                item["stock_units"] = current - amount
                 item["updated_at"] = dt_util.utcnow().isoformat()
                 result = dict(item)
                 result["removed"] = False
@@ -186,11 +215,33 @@ class FoodArchive:
 
     async def async_clear(self) -> int:
         async with self._lock:
-            count = sum(_stock_count(item) for item in self._items)
+            count = sum(_stock_units(item) for item in self._items)
             self._items = []
             await self._async_save()
         self._update_summary_sensors()
         return count
+
+    async def async_set_units(self, product_id: str, amount: int) -> dict[str, Any] | None:
+        """Corregge manualmente le unità disponibili di un lotto."""
+        if amount < 0:
+            raise ValueError("La quantità non può essere negativa.")
+        async with self._lock:
+            item = next((x for x in self._items if x.get("id") == product_id), None)
+            if item is None:
+                return None
+            if amount == 0:
+                self._items = [x for x in self._items if x.get("id") != product_id]
+                result = dict(item)
+                result["stock_units"] = 0
+                result["removed"] = True
+            else:
+                item["stock_units"] = amount
+                item["updated_at"] = dt_util.utcnow().isoformat()
+                result = dict(item)
+                result["removed"] = False
+            await self._async_save()
+        self._update_summary_sensors()
+        return result
 
     def items(self) -> list[dict[str, Any]]:
         return [dict(item) for item in self._items]
@@ -258,7 +309,7 @@ class FoodArchive:
         counts = {"frigo": 0, "freezer": 0, "dispensa": 0, "senza_posizione": 0}
         total_units = 0
         for item in self._items:
-            units = _stock_count(item)
+            units = _stock_units(item)
             total_units += units
             location = item.get("location")
             if location in VALID_LOCATIONS:
@@ -290,7 +341,8 @@ class FoodArchive:
                     "brand": next_item.get("brand"),
                     "location": next_item.get("location"),
                     "expiry_type": next_item.get("expiry_type"),
-                    "stock_count": _stock_count(next_item),
+                    "stock_units": _stock_units(next_item),
+                    "unit_name": next_item.get("unit_name"),
                 },
             )
         else:
