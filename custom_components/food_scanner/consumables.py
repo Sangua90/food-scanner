@@ -14,6 +14,7 @@ STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.consumables"
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 STANDARD_UNITS = ("Pezzi", "Bottiglie", "Lattine", "Vasetti", "Confezioni")
+VALID_LOCATIONS = ("magazzino", "bagno", "cucina", "lavanderia")
 
 
 def _now() -> str:
@@ -29,15 +30,16 @@ def _unit(v: Any) -> str:
     for unit in STANDARD_UNITS:
         if raw == unit.casefold():
             return unit
-    if "bott" in raw or "flacon" in raw:
-        return "Bottiglie"
-    if "latt" in raw or "scatol" in raw:
-        return "Lattine"
-    if "vasett" in raw or "baratt" in raw:
-        return "Vasetti"
-    if "confez" in raw or "pacc" in raw:
-        return "Confezioni"
+    if "bott" in raw or "flacon" in raw: return "Bottiglie"
+    if "latt" in raw or "scatol" in raw: return "Lattine"
+    if "vasett" in raw or "baratt" in raw: return "Vasetti"
+    if "confez" in raw or "pacc" in raw: return "Confezioni"
     return "Pezzi"
+
+
+def _location(v: Any) -> str:
+    raw = str(v or "magazzino").strip().casefold()
+    return raw if raw in VALID_LOCATIONS else "magazzino"
 
 
 class ConsumablesStore:
@@ -57,7 +59,7 @@ class ConsumablesStore:
             item["unit_name"] = _unit(item.get("unit_name"))
             item["stock_units"] = max(0, int(item.get("stock_units", 1) or 0))
             item.setdefault("category", "Casa")
-            item.setdefault("location", "magazzino")
+            item["location"] = _location(item.get("location"))
         await self._async_save()
 
     async def _async_save(self) -> None:
@@ -70,111 +72,72 @@ class ConsumablesStore:
         return [dict(x) for x in reversed(self._history[-max(1, limit):])]
 
     def summary(self) -> dict[str, Any]:
-        return {
-            "products": len(self._items),
-            "units": sum(max(0, int(x.get("stock_units", 0) or 0)) for x in self._items),
-            "low_stock": sum(1 for x in self._items if int(x.get("stock_units", 0) or 0) <= int(x.get("min_stock", 1) or 1)),
-        }
+        return {"products": len(self._items), "units": sum(max(0, int(x.get("stock_units", 0) or 0)) for x in self._items), "low_stock": sum(1 for x in self._items if int(x.get("stock_units", 0) or 0) <= int(x.get("min_stock", 1) or 1)), **{loc: sum(1 for x in self._items if x.get("location") == loc) for loc in VALID_LOCATIONS}}
 
     async def async_add(self, data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         name = str(data.get("product_name") or "").strip()
-        if not name:
-            raise ValueError("Il nome del consumabile è obbligatorio.")
+        if not name: raise ValueError("Il nome del consumabile è obbligatorio.")
         barcode = str(data.get("barcode") or "").strip() or None
         brand = str(data.get("brand") or "").strip() or None
         quantity = str(data.get("quantity") or "").strip() or None
         category = str(data.get("category") or "Casa").strip() or "Casa"
+        location = _location(data.get("location"))
         unit_name = _unit(data.get("unit_name"))
         add_units = max(1, int(data.get("stock_units", data.get("units_per_package", 1)) or 1))
         min_stock = max(0, int(data.get("min_stock", 1) or 0))
         now = _now()
-
         async with self._lock:
-            existing = next((x for x in self._items if (barcode and x.get("barcode") == barcode) or (
-                not barcode and _norm(x.get("product_name")) == _norm(name) and _norm(x.get("brand")) == _norm(brand)
-            )), None)
+            existing = next((x for x in self._items if ((barcode and x.get("barcode") == barcode) or (not barcode and _norm(x.get("product_name")) == _norm(name) and _norm(x.get("brand")) == _norm(brand))) and x.get("location") == location), None)
             if existing:
                 existing["stock_units"] = int(existing.get("stock_units", 0) or 0) + add_units
-                existing["unit_name"] = unit_name
-                existing["updated_at"] = now
+                existing["unit_name"] = unit_name; existing["updated_at"] = now
                 existing["min_stock"] = min_stock if "min_stock" in data else existing.get("min_stock", 1)
-                if category:
-                    existing["category"] = category
+                if category: existing["category"] = category
                 result, created = dict(existing), False
             else:
-                item = {
-                    "id": uuid.uuid4().hex,
-                    "product_name": name,
-                    "brand": brand,
-                    "quantity": quantity,
-                    "barcode": barcode,
-                    "category": category,
-                    "location": "magazzino",
-                    "unit_name": unit_name,
-                    "stock_units": add_units,
-                    "min_stock": min_stock,
-                    "added_at": now,
-                    "updated_at": now,
-                }
-                self._items.append(item)
-                result, created = dict(item), True
-            self._history.append({"type": "added", "at": now, "product_id": result["id"], "product_name": name, "amount": add_units, "unit_name": unit_name})
+                item = {"id": uuid.uuid4().hex, "product_name": name, "brand": brand, "quantity": quantity, "barcode": barcode, "category": category, "location": location, "unit_name": unit_name, "stock_units": add_units, "min_stock": min_stock, "added_at": now, "updated_at": now}
+                self._items.append(item); result, created = dict(item), True
+            self._history.append({"type":"added","at":now,"product_id":result["id"],"product_name":name,"amount":add_units,"unit_name":unit_name})
             await self._async_save()
         return result, created
 
     async def async_consume(self, product_id: str, amount: int) -> dict[str, Any] | None:
-        amount = int(amount)
-        if amount < 1:
-            raise ValueError("La quantità deve essere almeno 1.")
+        amount=int(amount)
+        if amount<1: raise ValueError("La quantità deve essere almeno 1.")
         async with self._lock:
-            item = next((x for x in self._items if x.get("id") == product_id), None)
-            if item is None:
-                return None
-            current = int(item.get("stock_units", 0) or 0)
-            if amount > current:
-                raise ValueError(f"Disponibili solo {current} {item.get('unit_name') or 'Pezzi'}.")
-            item["stock_units"] = current - amount
-            item["updated_at"] = _now()
-            result = dict(item)
-            self._history.append({"type": "consumed", "at": item["updated_at"], "product_id": item["id"], "product_name": item.get("product_name"), "amount": amount, "unit_name": item.get("unit_name")})
+            item=next((x for x in self._items if x.get("id")==product_id),None)
+            if item is None:return None
+            current=int(item.get("stock_units",0) or 0)
+            if amount>current:raise ValueError(f"Disponibili solo {current} {item.get('unit_name') or 'Pezzi'}.")
+            item["stock_units"]=current-amount;item["updated_at"]=_now();result=dict(item)
+            self._history.append({"type":"consumed","at":item["updated_at"],"product_id":item["id"],"product_name":item.get("product_name"),"amount":amount,"unit_name":item.get("unit_name")})
             await self._async_save()
         return result
 
     async def async_update(self, product_id: str, changes: dict[str, Any]) -> dict[str, Any] | None:
         async with self._lock:
-            item = next((x for x in self._items if x.get("id") == product_id), None)
-            if item is None:
-                return None
-            for key in ("product_name", "brand", "quantity", "barcode", "category"):
-                if key in changes:
-                    item[key] = str(changes.get(key) or "").strip() or None
-            if not item.get("product_name"):
-                raise ValueError("Il nome del consumabile non può essere vuoto.")
-            if "unit_name" in changes:
-                item["unit_name"] = _unit(changes.get("unit_name"))
-            if "stock_units" in changes:
-                item["stock_units"] = max(0, int(changes.get("stock_units") or 0))
-            if "min_stock" in changes:
-                item["min_stock"] = max(0, int(changes.get("min_stock") or 0))
-            item["updated_at"] = _now()
-            await self._async_save()
-            return dict(item)
+            item=next((x for x in self._items if x.get("id")==product_id),None)
+            if item is None:return None
+            for key in ("product_name","brand","quantity","barcode","category"):
+                if key in changes:item[key]=str(changes.get(key) or "").strip() or None
+            if not item.get("product_name"):raise ValueError("Il nome del consumabile non può essere vuoto.")
+            if "unit_name" in changes:item["unit_name"]=_unit(changes.get("unit_name"))
+            if "stock_units" in changes:item["stock_units"]=max(0,int(changes.get("stock_units") or 0))
+            if "min_stock" in changes:item["min_stock"]=max(0,int(changes.get("min_stock") or 0))
+            if "location" in changes:item["location"]=_location(changes.get("location"))
+            item["updated_at"]=_now();await self._async_save();return dict(item)
 
     async def async_remove(self, product_id: str) -> bool:
         async with self._lock:
-            item = next((x for x in self._items if x.get("id") == product_id), None)
-            if item is None:
-                return False
-            self._items = [x for x in self._items if x.get("id") != product_id]
-            self._history.append({"type": "removed", "at": _now(), "product_id": product_id, "product_name": item.get("product_name"), "amount": int(item.get("stock_units", 0) or 0), "unit_name": item.get("unit_name")})
-            await self._async_save()
-            return True
+            item=next((x for x in self._items if x.get("id")==product_id),None)
+            if item is None:return False
+            self._items=[x for x in self._items if x.get("id")!=product_id]
+            self._history.append({"type":"removed","at":_now(),"product_id":product_id,"product_name":item.get("product_name"),"amount":int(item.get("stock_units",0) or 0),"unit_name":item.get("unit_name")})
+            await self._async_save();return True
 
 
 def get_consumables(hass: HomeAssistant) -> ConsumablesStore:
-    runtime = hass.data.setdefault(RUNTIME_KEY, {})
-    store = runtime.get("consumables")
-    if store is None:
-        store = ConsumablesStore(hass)
-        runtime["consumables"] = store
+    runtime=hass.data.setdefault(RUNTIME_KEY,{})
+    store=runtime.get("consumables")
+    if store is None:store=ConsumablesStore(hass);runtime["consumables"]=store
     return store
