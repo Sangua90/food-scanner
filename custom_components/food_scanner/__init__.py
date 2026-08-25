@@ -11,6 +11,8 @@ from .api import FoodScannerUploadView
 from .archive import get_archive
 from .archive_api import FoodScannerArchiveView
 from .const import DOMAIN
+from .consumables import get_consumables
+from .consumables_api import FoodScannerConsumablesView
 from .expiry import ExpiryNotifier
 from .export_api import FoodScannerExportDataView, FoodScannerExportView
 from .history import get_history
@@ -22,7 +24,7 @@ from .units import async_install_standard_units
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
 PANEL_STATIC_URL = "/food_scanner_static"
-PANEL_VERSION = "1.1.4"
+PANEL_VERSION = "1.2.0"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -49,6 +51,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await history.async_load()
         runtime["history_loaded"] = True
 
+    consumables = get_consumables(hass)
+    if not runtime.get("consumables_loaded"):
+        await consumables.async_load()
+        runtime["consumables_loaded"] = True
+
     await async_setup_services(hass)
 
     if not runtime.get("upload_view_registered"):
@@ -62,6 +69,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not runtime.get("dashboard_scan_view_registered"):
         hass.http.register_view(FoodScannerDashboardScanView)
         runtime["dashboard_scan_view_registered"] = True
+
+    if not runtime.get("consumables_view_registered"):
+        hass.http.register_view(FoodScannerConsumablesView)
+        runtime["consumables_view_registered"] = True
 
     if not runtime.get("export_view_registered"):
         hass.http.register_view(FoodScannerExportView)
@@ -85,7 +96,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             webcomponent_name="food-scanner-panel",
             sidebar_title="Food Scanner",
             sidebar_icon="mdi:food-apple-outline",
-            module_url=f"{PANEL_STATIC_URL}/panel_v114.js?v={PANEL_VERSION}",
+            module_url=f"{PANEL_STATIC_URL}/panel_v120.js?v={PANEL_VERSION}",
             require_admin=False,
         )
     runtime["panel_registered"] = True
