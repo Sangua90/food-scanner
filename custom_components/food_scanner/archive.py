@@ -50,12 +50,10 @@ def _units_per_package(food_or_item: dict[str, Any]) -> int:
 
 
 def _same_lot(item: dict[str, Any], food: dict[str, Any], location: str | None) -> bool:
-    """Raggruppa solo prodotti compatibili nello stesso lotto/scadenza."""
+    """Raggruppa solo lo stesso prodotto, nella stessa posizione e con stessa scadenza."""
     if _norm(item.get("location")) != _norm(location):
         return False
     if _norm(item.get("expiry_date")) != _norm(food.get("expiry_date")):
-        return False
-    if _norm(item.get("quantity")) != _norm(food.get("quantity")):
         return False
 
     old_barcode = _norm(item.get("barcode"))
@@ -66,8 +64,27 @@ def _same_lot(item: dict[str, Any], food: dict[str, Any], location: str | None) 
     return (
         _norm(item.get("product_name")) == _norm(food.get("product_name"))
         and _norm(item.get("brand")) == _norm(food.get("brand"))
+        and _norm(item.get("quantity")) == _norm(food.get("quantity"))
         and _norm(item.get("unit_name")) == _norm(food.get("unit_name"))
     )
+
+
+def _validate_location(value: Any) -> str:
+    location = str(value or "").strip().lower()
+    if location not in VALID_LOCATIONS:
+        raise ValueError("Posizione non valida. Usa frigo, freezer o dispensa.")
+    return location
+
+
+def _validate_expiry(value: Any, *, allow_empty: bool = True) -> str | None:
+    raw = str(value or "").strip()
+    if not raw and allow_empty:
+        return None
+    try:
+        date.fromisoformat(raw)
+    except ValueError as err:
+        raise ValueError("La scadenza deve essere nel formato YYYY-MM-DD.") from err
+    return raw
 
 
 class FoodArchive:
@@ -181,6 +198,58 @@ class FoodArchive:
         self._update_summary_sensors()
         return result, created, added_units
 
+    async def async_add_manual(self, data: dict[str, Any]) -> tuple[dict[str, Any], bool, int]:
+        """Aggiunge manualmente quantità reali al magazzino."""
+        name = str(data.get("product_name") or "").strip()
+        if not name:
+            raise ValueError("Il nome del prodotto è obbligatorio.")
+
+        location = _validate_location(data.get("location"))
+        expiry_date = _validate_expiry(data.get("expiry_date"), allow_empty=True)
+        stock_units = _int_at_least_one(data.get("stock_units", 1))
+        units_per_package = _int_at_least_one(data.get("units_per_package", 1))
+        now = dt_util.utcnow().isoformat()
+
+        food = {
+            "product_name": name,
+            "brand": str(data.get("brand") or "").strip() or None,
+            "quantity": str(data.get("quantity") or "").strip() or None,
+            "barcode": str(data.get("barcode") or "").strip() or None,
+            "expiry_date": expiry_date,
+            "expiry_type": str(data.get("expiry_type") or "").strip() or None,
+            "confidence": None,
+            "location": location,
+            "package_type": str(data.get("package_type") or "confezione").strip() or "confezione",
+            "units_per_package": units_per_package,
+            "unit_name": str(data.get("unit_name") or "unità").strip() or "unità",
+        }
+
+        async with self._lock:
+            existing = next((item for item in self._items if _same_lot(item, food, location)), None)
+            if existing is not None:
+                existing["stock_units"] = _stock_units(existing) + stock_units
+                existing["updated_at"] = now
+                result = dict(existing)
+                created = False
+            else:
+                item = {
+                    "id": uuid.uuid4().hex,
+                    **food,
+                    "stock_units": stock_units,
+                    "added_at": now,
+                    "updated_at": now,
+                }
+                self._items.append(item)
+                await self._async_save()
+                result = dict(item)
+                created = True
+
+            if existing is not None:
+                await self._async_save()
+
+        self._update_summary_sensors()
+        return result, created, stock_units
+
     async def async_consume(self, product_id: str, amount: int = 1) -> dict[str, Any] | None:
         """Rimuove unità consumabili. Elimina il lotto solo a zero."""
         if amount < 1:
@@ -277,21 +346,10 @@ class FoodArchive:
                 raise ValueError("Il nome del prodotto non può essere vuoto.")
 
             if "location" in changes:
-                location = str(changes.get("location") or "").strip().lower()
-                if location not in VALID_LOCATIONS:
-                    raise ValueError("Posizione non valida.")
-                item["location"] = location
+                item["location"] = _validate_location(changes.get("location"))
 
             if "expiry_date" in changes:
-                raw_date = str(changes.get("expiry_date") or "").strip()
-                if raw_date:
-                    try:
-                        date.fromisoformat(raw_date)
-                    except ValueError as err:
-                        raise ValueError("La scadenza deve essere nel formato YYYY-MM-DD.") from err
-                    item["expiry_date"] = raw_date
-                else:
-                    item["expiry_date"] = None
+                item["expiry_date"] = _validate_expiry(changes.get("expiry_date"), allow_empty=True)
 
             if "units_per_package" in changes:
                 try:
@@ -308,8 +366,7 @@ class FoodArchive:
                 (
                     other
                     for other in self._items
-                    if other is not item
-                    and _same_lot(other, item, item.get("location"))
+                    if other is not item and _same_lot(other, item, item.get("location"))
                 ),
                 None,
             )
@@ -385,10 +442,7 @@ class FoodArchive:
                 result.append(copy)
         return result
 
-    async def _async_save(self) -> None:
-        await self.store.async_save({"items": self._items})
-
-    def _update_summary_sensors(self) -> None:
+    def summary(self) -> dict[str, Any]:
         counts = {"frigo": 0, "freezer": 0, "dispensa": 0, "senza_posizione": 0}
         total_units = 0
         for item in self._items:
@@ -400,16 +454,34 @@ class FoodArchive:
             else:
                 counts["senza_posizione"] += units
 
-        sorted_items = self.items_sorted_by_expiry()
-        next_item = next((item for item in sorted_items if item.get("expiry_date")), None)
+        next_item = next(
+            (item for item in self.items_sorted_by_expiry() if item.get("expiry_date")),
+            None,
+        )
+        return {
+            "total_units": total_units,
+            "lots": len(self._items),
+            **counts,
+            "next_expiry": dict(next_item) if next_item else None,
+        }
+
+    async def _async_save(self) -> None:
+        await self.store.async_save({"items": self._items})
+
+    def _update_summary_sensors(self) -> None:
+        summary = self.summary()
+        next_item = summary["next_expiry"]
 
         self.hass.states.async_set(
             "sensor.food_scanner_archive_count",
-            total_units,
+            summary["total_units"],
             {
                 "friendly_name": "Food Scanner - Unità in magazzino",
-                "lots": len(self._items),
-                **counts,
+                "lots": summary["lots"],
+                "frigo": summary["frigo"],
+                "freezer": summary["freezer"],
+                "dispensa": summary["dispensa"],
+                "senza_posizione": summary["senza_posizione"],
             },
         )
 
