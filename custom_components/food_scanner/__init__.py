@@ -21,40 +21,33 @@ from .units import async_install_standard_units
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
 PANEL_STATIC_URL = "/food_scanner_static"
-PANEL_VERSION = "1.4.1"
-
+PANEL_VERSION = "1.4.2"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
-
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.title == "Food Scanner":
         hass.config_entries.async_update_entry(entry, title="HomeStock")
-
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = entry
     runtime = hass.data.setdefault(RUNTIME_KEY, {})
 
     archive = get_archive(hass)
     if not runtime.get("archive_loaded"):
-        await archive.async_load()
-        runtime["archive_loaded"] = True
+        await archive.async_load(); runtime["archive_loaded"] = True
     await async_install_standard_units(archive)
 
     review_queue = get_review_queue(hass)
     if not runtime.get("review_queue_loaded"):
-        await review_queue.async_load()
-        runtime["review_queue_loaded"] = True
+        await review_queue.async_load(); runtime["review_queue_loaded"] = True
 
     history = get_history(hass)
     if not runtime.get("history_loaded"):
-        await history.async_load()
-        runtime["history_loaded"] = True
+        await history.async_load(); runtime["history_loaded"] = True
 
     consumables = get_consumables(hass)
     if not runtime.get("consumables_loaded"):
-        await consumables.async_load()
-        runtime["consumables_loaded"] = True
+        await consumables.async_load(); runtime["consumables_loaded"] = True
 
     await async_setup_services(hass)
 
@@ -65,8 +58,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ("consumables_view_registered", FoodScannerConsumablesView),
     ):
         if not runtime.get(key):
-            hass.http.register_view(view)
-            runtime[key] = True
+            hass.http.register_view(view); runtime[key] = True
 
     if not runtime.get("export_view_registered"):
         hass.http.register_view(FoodScannerExportView)
@@ -75,11 +67,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if not runtime.get("panel_static_registered"):
         await hass.http.async_register_static_paths([
-            StaticPathConfig(
-                PANEL_STATIC_URL,
-                str(Path(__file__).parent / "www"),
-                cache_headers=False,
-            )
+            StaticPathConfig(PANEL_STATIC_URL, str(Path(__file__).parent / "www"), cache_headers=False)
         ])
         runtime["panel_static_registered"] = True
 
@@ -90,7 +78,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             webcomponent_name="food-scanner-panel",
             sidebar_title="HomeStock",
             sidebar_icon="mdi:home-analytics",
-            module_url=f"{PANEL_STATIC_URL}/panel_v140.js?v={PANEL_VERSION}",
+            module_url=f"{PANEL_STATIC_URL}/panel_v142.js?v={PANEL_VERSION}",
             require_admin=False,
         )
     runtime["panel_registered"] = True
@@ -101,18 +89,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     notifier = ExpiryNotifier(hass, entry)
     await notifier.async_setup()
     runtime["expiry_notifier"] = notifier
-
     return True
-
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     runtime = hass.data.setdefault(RUNTIME_KEY, {})
-
     notifier = runtime.pop("expiry_notifier", None)
     if notifier is not None:
         await notifier.async_unload()
-
     if frontend.async_panel_exists(hass, PANEL_URL_PATH):
         frontend.async_remove_panel(hass, PANEL_URL_PATH)
     runtime["panel_registered"] = False
