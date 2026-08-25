@@ -15,6 +15,7 @@ STORAGE_KEY = f"{DOMAIN}.consumables"
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 STANDARD_UNITS = ("Pezzi", "Bottiglie", "Lattine", "Vasetti", "Confezioni")
 VALID_LOCATIONS = ("magazzino", "bagno", "cucina", "lavanderia")
+DEFAULT_LOW_STOCK = 2
 
 
 def _now() -> str:
@@ -42,6 +43,11 @@ def _location(v: Any) -> str:
     return raw if raw in VALID_LOCATIONS else "magazzino"
 
 
+def _effective_min_stock(item: dict[str, Any]) -> int:
+    custom = max(0, int(item.get("min_stock", 0) or 0))
+    return custom if custom > 0 else DEFAULT_LOW_STOCK
+
+
 class ConsumablesStore:
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
@@ -61,6 +67,14 @@ class ConsumablesStore:
             item["stock_units"] = max(0, int(item.get("stock_units", 1) or 0))
             item.setdefault("category", "Casa")
             item["location"] = _location(item.get("location"))
+            # Older HomeStock builds silently assigned min_stock=1. Since the
+            # threshold was not user-facing, normalize that legacy default to
+            # 0 = automatic threshold (currently 2).
+            if int(item.get("min_stock", 0) or 0) == 1 and not item.get("threshold_customized"):
+                item["min_stock"] = 0
+            else:
+                item["min_stock"] = max(0, int(item.get("min_stock", 0) or 0))
+            item["threshold_customized"] = bool(item.get("min_stock", 0))
             if item["stock_units"] > 0:
                 cleaned.append(item)
         self._items = cleaned
@@ -70,13 +84,23 @@ class ConsumablesStore:
         await self.store.async_save({"items": self._items, "history": self._history[-5000:]})
 
     def items(self) -> list[dict[str, Any]]:
-        return [dict(x) for x in self._items]
+        result = []
+        for item in self._items:
+            copy = dict(item)
+            copy["effective_min_stock"] = _effective_min_stock(item)
+            result.append(copy)
+        return result
 
     def history(self, limit: int = 50) -> list[dict[str, Any]]:
         return [dict(x) for x in reversed(self._history[-max(1, limit):])]
 
     def summary(self) -> dict[str, Any]:
-        return {"products": len(self._items), "units": sum(max(0, int(x.get("stock_units", 0) or 0)) for x in self._items), "low_stock": sum(1 for x in self._items if int(x.get("stock_units", 0) or 0) <= int(x.get("min_stock", 1) or 1)), **{loc: sum(1 for x in self._items if x.get("location") == loc) for loc in VALID_LOCATIONS}}
+        return {
+            "products": len(self._items),
+            "units": sum(max(0, int(x.get("stock_units", 0) or 0)) for x in self._items),
+            "low_stock": sum(1 for x in self._items if int(x.get("stock_units", 0) or 0) <= _effective_min_stock(x)),
+            **{loc: sum(1 for x in self._items if x.get("location") == loc) for loc in VALID_LOCATIONS},
+        }
 
     async def async_add(self, data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         name = str(data.get("product_name") or "").strip()
@@ -88,19 +112,39 @@ class ConsumablesStore:
         location = _location(data.get("location"))
         unit_name = _unit(data.get("unit_name"))
         add_units = max(1, int(data.get("stock_units", data.get("units_per_package", 1)) or 1))
-        min_stock = max(0, int(data.get("min_stock", 1) or 0))
+        min_stock = max(0, int(data.get("min_stock", 0) or 0))
+        threshold_customized = min_stock > 0
         now = _now()
         async with self._lock:
             existing = next((x for x in self._items if ((barcode and x.get("barcode") == barcode) or (not barcode and _norm(x.get("product_name")) == _norm(name) and _norm(x.get("brand")) == _norm(brand))) and x.get("location") == location), None)
             if existing:
                 existing["stock_units"] = int(existing.get("stock_units", 0) or 0) + add_units
-                existing["unit_name"] = unit_name; existing["updated_at"] = now
-                existing["min_stock"] = min_stock if "min_stock" in data else existing.get("min_stock", 1)
+                existing["unit_name"] = unit_name
+                existing["updated_at"] = now
+                if "min_stock" in data:
+                    existing["min_stock"] = min_stock
+                    existing["threshold_customized"] = threshold_customized
                 if category: existing["category"] = category
                 result, created = dict(existing), False
             else:
-                item = {"id": uuid.uuid4().hex, "product_name": name, "brand": brand, "quantity": quantity, "barcode": barcode, "category": category, "location": location, "unit_name": unit_name, "stock_units": add_units, "min_stock": min_stock, "added_at": now, "updated_at": now}
-                self._items.append(item); result, created = dict(item), True
+                item = {
+                    "id": uuid.uuid4().hex,
+                    "product_name": name,
+                    "brand": brand,
+                    "quantity": quantity,
+                    "barcode": barcode,
+                    "category": category,
+                    "location": location,
+                    "unit_name": unit_name,
+                    "stock_units": add_units,
+                    "min_stock": min_stock,
+                    "threshold_customized": threshold_customized,
+                    "added_at": now,
+                    "updated_at": now,
+                }
+                self._items.append(item)
+                result, created = dict(item), True
+            result["effective_min_stock"] = _effective_min_stock(result)
             self._history.append({"type":"added","at":now,"product_id":result["id"],"product_name":name,"amount":add_units,"unit_name":unit_name})
             await self._async_save()
         return result, created
@@ -121,6 +165,7 @@ class ConsumablesStore:
                 self._items=[x for x in self._items if x.get("id")!=product_id]
             else:
                 item["stock_units"]=remaining;item["updated_at"]=now;result=dict(item)
+                result["effective_min_stock"]=_effective_min_stock(item)
             await self._async_save()
         return result
 
@@ -139,9 +184,13 @@ class ConsumablesStore:
                     await self._async_save()
                     return {**item,"stock_units":0,"depleted":True}
                 item["stock_units"]=value
-            if "min_stock" in changes:item["min_stock"]=max(0,int(changes.get("min_stock") or 0))
+            if "min_stock" in changes:
+                item["min_stock"]=max(0,int(changes.get("min_stock") or 0))
+                item["threshold_customized"]=item["min_stock"]>0
             if "location" in changes:item["location"]=_location(changes.get("location"))
-            item["updated_at"]=_now();await self._async_save();return dict(item)
+            item["updated_at"]=_now()
+            await self._async_save()
+            result=dict(item);result["effective_min_stock"]=_effective_min_stock(item);return result
 
     async def async_remove(self, product_id: str) -> bool:
         async with self._lock:
