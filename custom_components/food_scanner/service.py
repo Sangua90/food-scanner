@@ -20,23 +20,38 @@ from .const import (
     DEFAULT_MODEL,
     DEFAULT_NOTIFY,
     SERVICE_SCAN_IMAGE,
+    SERVICE_CONSUME_PRODUCT,
+    SERVICE_SET_STOCK,
+    SERVICE_REMOVE_PRODUCT,
+    SERVICE_CLEAR_ARCHIVE,
 )
 
 PROMPT = """Analizza questa foto di un prodotto alimentare.
 Restituisci esclusivamente un oggetto JSON valido con questi campi:
-product_name, brand, quantity, barcode, expiry_date, expiry_type, confidence.
-expiry_date deve essere YYYY-MM-DD oppure null.
-expiry_type deve essere \"scadenza\", \"TMC\" oppure null.
-confidence deve essere un numero da 0 a 100.
-Non inventare mai una data o un codice a barre. Se non sono leggibili usa null.
-Interpreta correttamente le date italiane GG/MM/AAAA e GG/MM/AA.
-\"da consumarsi entro\" indica scadenza; \"da consumarsi preferibilmente entro\" indica TMC.
+product_name, brand, quantity, barcode, expiry_date, expiry_type, confidence,
+package_type, units_per_package, unit_name.
+
+Regole:
+- expiry_date deve essere YYYY-MM-DD oppure null.
+- expiry_type deve essere \"scadenza\", \"TMC\" oppure null.
+- confidence deve essere un numero da 0 a 100.
+- package_type descrive il contenitore/confezione visibile, per esempio:
+  \"scatola\", \"confezione\", \"bottiglia\", \"lattina\", \"barattolo\", \"vasetto\", \"busta\", \"pezzo\".
+- units_per_package deve essere il numero di unità realmente consumabili contenute nella confezione fotografata.
+  Esempi: scatola con 10 merendine = 10; confezione 3 x 80 g di tonno = 3;
+  pacco da 6 bottiglie = 6; singola bottiglia = 1; singolo vasetto = 1.
+- unit_name deve descrivere quelle unità al plurale in italiano, per esempio:
+  \"merendine\", \"lattine\", \"bottiglie\", \"vasetti\", \"buste\", \"pezzi\".
+- Se il prodotto non è un multipack o il numero di unità non è leggibile con certezza,
+  usa units_per_package = 1 e un unit_name coerente (es. \"confezioni\" o \"pezzi\").
+- quantity resta la quantità commerciale riportata sulla confezione (es. \"3 x 80 g\", \"1 L\", \"10 x 30 g\").
+- Non inventare mai una data, un codice a barre o un numero di unità.
+- Interpreta correttamente le date italiane GG/MM/AAAA e GG/MM/AA.
+- \"da consumarsi entro\" indica scadenza; \"da consumarsi preferibilmente entro\" indica TMC.
 """
 
 SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 VALID_LOCATIONS = {"frigo", "freezer", "dispensa"}
-SERVICE_REMOVE_PRODUCT = "remove_product"
-SERVICE_CLEAR_ARCHIVE = "clear_archive"
 
 
 def _entry_settings(entry):
@@ -61,6 +76,16 @@ def _normalize_location(location: str | None) -> str | None:
     return value
 
 
+def _normalize_package_fields(food: dict) -> None:
+    try:
+        units = int(food.get("units_per_package") or 1)
+    except (TypeError, ValueError):
+        units = 1
+    food["units_per_package"] = max(1, units)
+    food["unit_name"] = str(food.get("unit_name") or "unità").strip()
+    food["package_type"] = str(food.get("package_type") or "confezione").strip()
+
+
 async def async_analyze_image_bytes(
     hass: HomeAssistant,
     image_bytes: bytes,
@@ -68,7 +93,7 @@ async def async_analyze_image_bytes(
     notify: bool | None = None,
     location: str | None = None,
 ) -> dict:
-    """Analizza bytes immagine con Gemini e salva il prodotto in archivio."""
+    """Analizza bytes immagine con Gemini e salva/incrementa il magazzino."""
     if not image_bytes:
         raise HomeAssistantError("La foto ricevuta è vuota.")
     if mime_type not in SUPPORTED_MIME_TYPES:
@@ -118,16 +143,21 @@ async def async_analyze_image_bytes(
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as err:
         raise HomeAssistantError(f"Risposta Gemini non valida: {err}") from err
 
+    _normalize_package_fields(food)
+
     state = food.get("product_name") or "Prodotto non riconosciuto"
     archive_item = None
+    created = False
+    added_units = 0
     if food.get("product_name"):
-        archive_item = await get_archive(hass).async_add(food, location)
+        archive_item, created, added_units = await get_archive(hass).async_add(food, location)
 
     attributes = {"friendly_name": "Food Scanner - Ultimo risultato", "model": model, **food}
     if location:
         attributes["location"] = location
     if archive_item:
         attributes["archive_id"] = archive_item["id"]
+        attributes["stock_units"] = archive_item.get("stock_units", 1)
 
     hass.states.async_set(
         "sensor.food_scanner_last_result",
@@ -148,7 +178,12 @@ async def async_analyze_image_bytes(
         if food.get("barcode"):
             lines.append(f"EAN: `{food['barcode']}`")
         if archive_item:
-            lines.append("Salvato in archivio: **sì**")
+            unit_name = archive_item.get("unit_name") or "unità"
+            total = archive_item.get("stock_units", added_units or 1)
+            if added_units > 1:
+                lines.append(f"Confezione rilevata: **{added_units} {unit_name}**")
+            lines.append(f"Magazzino: **{total} {unit_name}**")
+            lines.append("Nuovo lotto" if created else "Lotto esistente aggiornato")
         if food.get("confidence") is not None:
             lines.append(f"Confidenza: {food['confidence']}%")
         async_create_persistent_notification(
@@ -163,6 +198,9 @@ async def async_analyze_image_bytes(
         response_data["location"] = location
     if archive_item:
         response_data["archive_id"] = archive_item["id"]
+        response_data["stock_units"] = archive_item.get("stock_units", 1)
+        response_data["added_units"] = added_units
+        response_data["new_lot"] = created
     return response_data
 
 
@@ -191,6 +229,26 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         except Exception as err:
             raise HomeAssistantError(f"Errore interno Food Scanner: {type(err).__name__}: {err}") from err
 
+    async def handle_consume(call: ServiceCall) -> None:
+        product_id = call.data["product_id"]
+        amount = call.data.get("amount", 1)
+        try:
+            result = await get_archive(hass).async_consume(product_id, amount)
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+        if result is None:
+            raise HomeAssistantError("Prodotto non trovato nell'archivio.")
+
+    async def handle_set_stock(call: ServiceCall) -> None:
+        product_id = call.data["product_id"]
+        amount = call.data["amount"]
+        try:
+            result = await get_archive(hass).async_set_units(product_id, amount)
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+        if result is None:
+            raise HomeAssistantError("Prodotto non trovato nell'archivio.")
+
     async def handle_remove(call: ServiceCall) -> None:
         product_id = call.data["product_id"]
         removed = await get_archive(hass).async_remove(product_id)
@@ -209,6 +267,24 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             }
         )
         hass.services.async_register(DOMAIN, SERVICE_SCAN_IMAGE, handle_scan, scan_schema)
+
+    if not hass.services.has_service(DOMAIN, SERVICE_CONSUME_PRODUCT):
+        consume_schema = vol.Schema(
+            {
+                vol.Required("product_id"): str,
+                vol.Optional("amount", default=1): vol.All(vol.Coerce(int), vol.Range(min=1)),
+            }
+        )
+        hass.services.async_register(DOMAIN, SERVICE_CONSUME_PRODUCT, handle_consume, consume_schema)
+
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_STOCK):
+        set_stock_schema = vol.Schema(
+            {
+                vol.Required("product_id"): str,
+                vol.Required("amount"): vol.All(vol.Coerce(int), vol.Range(min=0)),
+            }
+        )
+        hass.services.async_register(DOMAIN, SERVICE_SET_STOCK, handle_set_stock, set_stock_schema)
 
     if not hass.services.has_service(DOMAIN, SERVICE_REMOVE_PRODUCT):
         remove_schema = vol.Schema({vol.Required("product_id"): str})
