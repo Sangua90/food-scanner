@@ -9,8 +9,14 @@ from .const import (
     CONF_API_KEY,
     CONF_MODEL,
     CONF_NOTIFY,
+    CONF_EXPIRY_NOTIFY,
+    CONF_EXPIRY_NOTIFY_DAYS,
+    CONF_EXPIRY_NOTIFY_SERVICE,
     DEFAULT_MODEL,
     DEFAULT_NOTIFY,
+    DEFAULT_EXPIRY_NOTIFY,
+    DEFAULT_EXPIRY_NOTIFY_DAYS,
+    DEFAULT_EXPIRY_NOTIFY_SERVICE,
 )
 
 
@@ -45,11 +51,29 @@ class FoodScannerOptionsFlow(config_entries.OptionsFlowWithReload):
             self.config_entry.data.get(CONF_MODEL, DEFAULT_MODEL),
         )
         current_notify = self.config_entry.options.get(CONF_NOTIFY, DEFAULT_NOTIFY)
+        current_expiry_notify = self.config_entry.options.get(
+            CONF_EXPIRY_NOTIFY, DEFAULT_EXPIRY_NOTIFY
+        )
+        current_expiry_days = self.config_entry.options.get(
+            CONF_EXPIRY_NOTIFY_DAYS, DEFAULT_EXPIRY_NOTIFY_DAYS
+        )
+        current_notify_service = self.config_entry.options.get(
+            CONF_EXPIRY_NOTIFY_SERVICE, DEFAULT_EXPIRY_NOTIFY_SERVICE
+        )
 
         schema = vol.Schema(
             {
                 vol.Optional(CONF_MODEL, default=current_model): str,
                 vol.Optional(CONF_NOTIFY, default=current_notify): bool,
+                vol.Optional(CONF_EXPIRY_NOTIFY, default=current_expiry_notify): bool,
+                vol.Optional(
+                    CONF_EXPIRY_NOTIFY_DAYS,
+                    default=current_expiry_days,
+                ): vol.All(vol.Coerce(int), vol.Range(min=0, max=365)),
+                vol.Optional(
+                    CONF_EXPIRY_NOTIFY_SERVICE,
+                    default=current_notify_service,
+                ): str,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)
