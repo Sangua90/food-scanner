@@ -7,6 +7,8 @@ from .api import FoodScannerUploadView
 from .const import DOMAIN
 from .service import async_setup_services
 
+RUNTIME_KEY = f"{DOMAIN}_runtime"
+
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
@@ -16,9 +18,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = entry
     await async_setup_services(hass)
 
-    if not hass.data[DOMAIN].get("_upload_view_registered"):
+    runtime = hass.data.setdefault(RUNTIME_KEY, {})
+    if not runtime.get("upload_view_registered"):
         hass.http.register_view(FoodScannerUploadView)
-        hass.data[DOMAIN]["_upload_view_registered"] = True
+        runtime["upload_view_registered"] = True
 
     return True
 
