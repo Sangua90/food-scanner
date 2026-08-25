@@ -15,6 +15,15 @@ STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.archive"
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 VALID_LOCATIONS = {"frigo", "freezer", "dispensa"}
+EDITABLE_TEXT_FIELDS = {
+    "product_name",
+    "brand",
+    "quantity",
+    "barcode",
+    "expiry_type",
+    "unit_name",
+    "package_type",
+}
 
 
 def _norm(value: Any) -> str:
@@ -240,6 +249,80 @@ class FoodArchive:
                 result = dict(item)
                 result["removed"] = False
             await self._async_save()
+        self._update_summary_sensors()
+        return result
+
+    async def async_update_item(
+        self,
+        product_id: str,
+        changes: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Corregge manualmente i dati di un lotto e unisce eventuali duplicati."""
+        async with self._lock:
+            item = next((x for x in self._items if x.get("id") == product_id), None)
+            if item is None:
+                return None
+
+            for field in EDITABLE_TEXT_FIELDS:
+                if field not in changes:
+                    continue
+                value = changes.get(field)
+                if value is None:
+                    item[field] = None
+                else:
+                    value = str(value).strip()
+                    item[field] = value or None
+
+            if "product_name" in changes and not item.get("product_name"):
+                raise ValueError("Il nome del prodotto non può essere vuoto.")
+
+            if "location" in changes:
+                location = str(changes.get("location") or "").strip().lower()
+                if location not in VALID_LOCATIONS:
+                    raise ValueError("Posizione non valida.")
+                item["location"] = location
+
+            if "expiry_date" in changes:
+                raw_date = str(changes.get("expiry_date") or "").strip()
+                if raw_date:
+                    try:
+                        date.fromisoformat(raw_date)
+                    except ValueError as err:
+                        raise ValueError("La scadenza deve essere nel formato YYYY-MM-DD.") from err
+                    item["expiry_date"] = raw_date
+                else:
+                    item["expiry_date"] = None
+
+            if "units_per_package" in changes:
+                try:
+                    units = int(changes["units_per_package"])
+                except (TypeError, ValueError) as err:
+                    raise ValueError("Unità per confezione non valide.") from err
+                if units < 1:
+                    raise ValueError("Le unità per confezione devono essere almeno 1.")
+                item["units_per_package"] = units
+
+            item["updated_at"] = dt_util.utcnow().isoformat()
+
+            duplicate = next(
+                (
+                    other
+                    for other in self._items
+                    if other is not item
+                    and _same_lot(other, item, item.get("location"))
+                ),
+                None,
+            )
+            if duplicate is not None:
+                duplicate["stock_units"] = _stock_units(duplicate) + _stock_units(item)
+                duplicate["updated_at"] = item["updated_at"]
+                self._items = [x for x in self._items if x is not item]
+                result = dict(duplicate)
+            else:
+                result = dict(item)
+
+            await self._async_save()
+
         self._update_summary_sensors()
         return result
 
