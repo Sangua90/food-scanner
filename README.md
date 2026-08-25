@@ -1,29 +1,56 @@
-# Food Scanner for Home Assistant
+# Food Scanner per Home Assistant
 
-Custom integration for Home Assistant that analyzes food-package photos with Google Gemini and extracts product name, brand, quantity, barcode and expiry date/TMC.
+Food Scanner è un'integrazione personalizzata per Home Assistant che analizza le foto delle confezioni alimentari tramite Google Gemini e prova a ricavare automaticamente:
 
-## Current status
+- nome del prodotto
+- marca
+- quantità/formato
+- codice a barre EAN/GTIN
+- data di scadenza o TMC
+- livello di confidenza della lettura
 
-Early test version. The integration currently analyzes an image already available on the Home Assistant filesystem via `food_scanner.scan_image`.
+L'integrazione è pensata come base per costruire una gestione completa di frigorifero, freezer e dispensa con notifiche sulle scadenze.
 
-## HACS installation
+## Come funziona
 
-1. Open HACS.
-2. Go to Integrations.
-3. Open the menu and choose **Custom repositories**.
-4. Add `https://github.com/Sangua90/food-scanner` as an **Integration**.
-5. Install **Food Scanner**.
-6. Restart Home Assistant.
-7. Go to **Settings → Devices & services → Add integration → Food Scanner**.
-8. Enter your Gemini API key.
+Il flusso attuale è:
 
-## Configuration
+`foto presente in Home Assistant → Food Scanner → Gemini → risultato → sensore Home Assistant`
 
-The Gemini model can be changed later from **Food Scanner → Configure** without deleting the integration or re-entering the API key.
+Il risultato più recente viene esposto come:
 
-Default model: `gemini-3.5-flash-lite`.
+`sensor.food_scanner_last_result`
 
-## Test action
+## Installazione tramite HACS
+
+1. Apri **HACS**.
+2. Vai in **Integrazioni**.
+3. Apri il menu in alto a destra e scegli **Repository personalizzati**.
+4. Aggiungi `https://github.com/Sangua90/food-scanner` come tipo **Integrazione**.
+5. Installa **Food Scanner**.
+6. Riavvia Home Assistant.
+7. Vai in **Impostazioni → Dispositivi e servizi → Aggiungi integrazione → Food Scanner**.
+8. Inserisci la tua API key Gemini.
+
+## Configurazione
+
+Il modello Gemini può essere modificato in seguito da:
+
+**Impostazioni → Dispositivi e servizi → Food Scanner → Configura**
+
+senza eliminare l'integrazione e senza reinserire la API key.
+
+Modello predefinito attuale:
+
+`gemini-3.5-flash-lite`
+
+## Test con una foto locale
+
+Metti una foto in una cartella accessibile da Home Assistant, per esempio:
+
+`/config/www/test_alimento.png`
+
+Poi esegui:
 
 ```yaml
 action: food_scanner.scan_image
@@ -32,12 +59,30 @@ data:
   notify: true
 ```
 
-The latest result is exposed as `sensor.food_scanner_last_result`.
+Se la lettura riesce, Food Scanner aggiorna `sensor.food_scanner_last_result` e mostra una notifica con i dati riconosciuti.
 
-## Roadmap
+## Versioni
 
-- direct iPhone Shortcut upload
-- persistent pantry/fridge database
-- expiry notifications
-- barcode lookup
-- dashboard helpers
+### 0.3.2
+- corretta la compatibilità delle notifiche con Home Assistant 2026.x
+- uso della sessione HTTP gestita da Home Assistant
+- messaggi di errore più chiari
+- README tradotto in italiano
+
+### 0.3.1
+- corretto il flusso Opzioni per Home Assistant 2026.8
+- modello Gemini modificabile senza reinstallare l'integrazione
+
+### 0.3.0
+- prima versione HACS-ready
+
+## Prossimi sviluppi
+
+- acquisizione diretta della foto da iPhone tramite Comandi Rapidi
+- caricamento automatico della foto in Home Assistant
+- archivio persistente degli alimenti
+- gestione frigorifero / freezer / dispensa
+- notifiche automatiche delle scadenze
+- ricerca prodotto tramite barcode
+- dashboard dedicata
+- logo e icona dell'integrazione
