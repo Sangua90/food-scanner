@@ -24,12 +24,9 @@ Restituisci esclusivamente JSON valido con: product_name, brand, quantity, barco
 category deve essere una tra: Carta e igiene, Pulizia casa, Bucato, Lavastoviglie, Bagno e persona, Sacchetti e monouso, Altro.
 unit_name deve essere ESATTAMENTE una tra: Pezzi, Bottiglie, Lattine, Vasetti, Confezioni.
 units_per_package è il numero di unità realmente consumabili nella confezione fotografata.
+Se il barcode EAN/UPC/GTIN è leggibile, riportalo esattamente; altrimenti usa null.
 Non inventare barcode o quantità non leggibili. confidence è 0-100.
 """
-BARCODE_PROMPT = """Leggi SOLO il codice a barre visibile nell'immagine.
-Restituisci esclusivamente JSON valido nel formato {"barcode":"1234567890123"}.
-Se non riesci a leggere con sicurezza un codice numerico EAN/UPC/GTIN tra 8 e 14 cifre, restituisci {"barcode":null}.
-Non inventare cifre."""
 
 
 def _entry(hass):
@@ -99,13 +96,26 @@ async def _analyze(hass, image_bytes: bytes, mime_type: str) -> dict:
         data["units_per_package"] = max(1, int(data.get("units_per_package") or 1))
     except (TypeError, ValueError):
         data["units_per_package"] = 1
-    return data
 
-
-async def _read_barcode(hass, image_bytes: bytes, mime_type: str) -> str | None:
-    data = await _gemini_json(hass, image_bytes, mime_type, BARCODE_PROMPT)
     barcode = "".join(ch for ch in str(data.get("barcode") or "") if ch.isdigit())
-    return barcode if 8 <= len(barcode) <= 14 else None
+    if 8 <= len(barcode) <= 14:
+        data["barcode"] = barcode
+        product = await async_lookup_product(hass, barcode)
+        if product:
+            if not data.get("product_name") and product.get("product_name"):
+                data["product_name"] = product["product_name"]
+            if not data.get("brand") and product.get("brand"):
+                data["brand"] = product["brand"]
+            if not data.get("quantity") and product.get("quantity"):
+                data["quantity"] = product["quantity"]
+            if str(data.get("category") or "").strip().casefold() in {"", "altro"} and product.get("category"):
+                data["category"] = product["category"]
+            if product.get("image_url"):
+                data["product_image_url"] = product["image_url"]
+            data["barcode_source"] = "Open Products Facts"
+    else:
+        data["barcode"] = None
+    return data
 
 
 class FoodScannerConsumablesView(HomeAssistantView):
@@ -127,21 +137,6 @@ class FoodScannerConsumablesView(HomeAssistantView):
 
         action = str(data.get("action") or "").strip().lower()
         try:
-            if action == "scan_barcode":
-                image_bytes, mime_type = _decode_image(data)
-                barcode = await _read_barcode(hass, image_bytes, mime_type)
-                if not barcode:
-                    return self.json({"success": True, "barcode_read": False, "found": False})
-                product = await async_lookup_product(hass, barcode)
-                _LOGGER.debug("HomeStock barcode %s: database_found=%s", barcode, product is not None)
-                return self.json({
-                    "success": True,
-                    "barcode_read": True,
-                    "barcode": barcode,
-                    "found": product is not None,
-                    "product": product,
-                })
-
             if action == "lookup_barcode":
                 barcode = "".join(ch for ch in str(data.get("barcode") or "") if ch.isdigit())
                 if len(barcode) < 8 or len(barcode) > 14:
