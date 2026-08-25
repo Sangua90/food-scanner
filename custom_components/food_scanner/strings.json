@@ -1,0 +1,27 @@
+{
+  "title": "Food Scanner",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configura Food Scanner",
+        "description": "Inserisci la API key di Google Gemini.",
+        "data": {
+          "api_key": "API key Gemini",
+          "model": "Modello Gemini"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opzioni Food Scanner",
+        "description": "Puoi modificare queste impostazioni senza reinstallare l'integrazione.",
+        "data": {
+          "model": "Modello Gemini",
+          "notify": "Notifiche"
+        }
+      }
+    }
+  }
+}
