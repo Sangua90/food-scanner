@@ -63,7 +63,9 @@ Regole:
 - Se la data di scadenza/TMC non è leggibile, needs_more_photo=true e inventory_ready=false.
 - Se il nome del prodotto non è abbastanza chiaro, needs_more_photo=true e inventory_ready=false.
 - missing_fields è una lista dei campi importanti mancanti o incerti.
-- photo_request è una breve istruzione in italiano su cosa fotografare meglio, oppure null se non serve.
+- photo_request deve spiegare SEMPRE sia il motivo della seconda foto sia cosa fotografare.
+  Esempio: \"Non riesco a leggere la data di scadenza. Fotografa da vicino la zona con la data.\"
+  Non usare richieste generiche come \"serve un'altra foto\" se sai quale dato manca.
 - inventory_ready deve essere true solo quando i dati essenziali per il magazzino sono sufficientemente affidabili.
 - needs_more_photo deve essere true quando una nuova foto può risolvere un dato importante incerto.
 - Non inventare mai una data, un codice a barre o un numero di unità.
@@ -136,6 +138,71 @@ def _normalize_package_fields(food: dict[str, Any]) -> None:
     food["photo_request"] = str(food.get("photo_request") or "").strip() or None
 
 
+def _missing(food: dict[str, Any], *names: str) -> bool:
+    fields = {str(x or "").strip().casefold() for x in food.get("missing_fields", [])}
+    return any(name.casefold() in fields for name in names)
+
+
+def _ensure_review_guidance(food: dict[str, Any]) -> None:
+    """Create a specific reason, photo instruction and button target for review."""
+    raw_expiry = str(food.get("expiry_date") or "").strip()
+    expiry_invalid = not raw_expiry
+    if raw_expiry:
+        try:
+            date.fromisoformat(raw_expiry)
+        except ValueError:
+            expiry_invalid = True
+
+    quantity = str(food.get("quantity") or "")
+    multipack_unclear = (
+        _missing(food, "units_per_package", "quantity", "quantita", "quantità")
+        or (MULTIPACK_RE.search(quantity) and int(food.get("units_per_package") or 1) <= 1)
+    )
+
+    if expiry_invalid or _missing(food, "expiry_date", "expiry", "scadenza", "tmc"):
+        reason = "Non riesco a leggere con sicurezza la data di scadenza/TMC."
+        instruction = "Fotografa da vicino la zona della confezione dove è stampata la data."
+        target = "expiry"
+        label = "Foto scadenza"
+    elif not food.get("product_name") or _missing(food, "product_name", "name", "nome"):
+        reason = "Non riesco a identificare con sicurezza il prodotto."
+        instruction = "Fotografa il fronte della confezione con nome e marca ben visibili."
+        target = "front"
+        label = "Foto frontale"
+    elif multipack_unclear:
+        reason = "Non riesco a capire quante unità contiene la confezione."
+        instruction = "Fotografa il lato dove sono indicati numero di pezzi, formato o quantità della confezione."
+        target = "quantity"
+        label = "Foto quantità"
+    elif _missing(food, "barcode", "ean", "gtin"):
+        reason = "Il codice a barre non è leggibile con sufficiente sicurezza."
+        instruction = "Fotografa da vicino il codice a barre, evitando riflessi e sfocature."
+        target = "barcode"
+        label = "Foto barcode"
+    elif _missing(food, "brand", "marca"):
+        reason = "La marca non è abbastanza leggibile."
+        instruction = "Fotografa il fronte o l'etichetta dove compare chiaramente la marca."
+        target = "front"
+        label = "Foto etichetta"
+    elif int(food.get("confidence") or 0) < MIN_READY_CONFIDENCE:
+        reason = "La prima foto non è abbastanza chiara per archiviare il prodotto con sicurezza."
+        instruction = "Fai una foto più frontale e ravvicinata dell'etichetta principale."
+        target = "details"
+        label = "Foto più chiara"
+    else:
+        existing = str(food.get("photo_request") or "").strip()
+        reason = "Manca ancora un dato necessario per archiviare correttamente il prodotto."
+        instruction = existing or "Fotografa più da vicino la parte della confezione con i dati non leggibili."
+        target = "details"
+        label = "Seconda foto"
+
+    food["photo_reason"] = reason
+    food["photo_instruction"] = instruction
+    food["photo_target"] = target
+    food["photo_button_label"] = label
+    food["photo_request"] = f"{reason} {instruction}"
+
+
 def _is_inventory_ready(food: dict[str, Any]) -> bool:
     if not food.get("product_name"):
         return False
@@ -153,8 +220,6 @@ def _is_inventory_ready(food: dict[str, Any]) -> bool:
         food["needs_more_photo"] = True
         if "units_per_package" not in food["missing_fields"]:
             food["missing_fields"].append("units_per_package")
-        if not food.get("photo_request"):
-            food["photo_request"] = "Fotografa il lato dove si legge chiaramente quante unità contiene la confezione."
         return False
 
     if food.get("needs_more_photo"):
@@ -199,11 +264,11 @@ def _resolve_mobile_notify(hass: HomeAssistant, entry) -> tuple[str, str] | None
 async def _send_review_alert(hass: HomeAssistant, entry, food: dict[str, Any], review_id: str) -> None:
     name = food.get("product_name") or "Prodotto non identificato"
     request = food.get("photo_request") or "Serve una foto più chiara del prodotto e della scadenza."
-    message = f"{name}: {request} Apri Food Scanner → Da verificare."
+    message = f"{name}: {request} Apri HomeStock → Da verificare."
     async_create_persistent_notification(
         hass,
         f"**{name}**\n\n{request}\n\nID verifica: `{review_id}`",
-        title="📸 Food Scanner — serve un'altra foto",
+        title="📸 HomeStock — serve un'altra foto",
         notification_id=f"food_scanner_review_{review_id}",
     )
     target = _resolve_mobile_notify(hass, entry)
@@ -213,7 +278,7 @@ async def _send_review_alert(hass: HomeAssistant, entry, food: dict[str, Any], r
             await hass.services.async_call(
                 domain,
                 service,
-                {"title": "Food Scanner — serve un'altra foto", "message": message, "data": {"url": "/food-scanner"}},
+                {"title": "HomeStock — serve un'altra foto", "message": message, "data": {"url": "/food-scanner"}},
                 blocking=False,
             )
         except Exception:
@@ -300,6 +365,9 @@ async def async_analyze_image_bytes(
         _normalize_package_fields(food)
 
     ready = _is_inventory_ready(food)
+    if not ready:
+        _ensure_review_guidance(food)
+
     archive_item = None
     created = False
     added_units = 0
