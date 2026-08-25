@@ -13,9 +13,11 @@ L'integrazione è pensata come base per costruire una gestione completa di frigo
 
 ## Come funziona
 
-Il flusso attuale è:
+Dalla versione 0.4.0 il flusso principale è:
 
-`foto presente in Home Assistant → Food Scanner → Gemini → risultato → sensore Home Assistant`
+`iPhone → foto → Home Assistant → Food Scanner → Gemini → risultato JSON + sensore Home Assistant`
+
+La foto viene analizzata direttamente in memoria e non viene salvata da Food Scanner sul disco di Home Assistant.
 
 Il risultato più recente viene esposto come:
 
@@ -44,13 +46,40 @@ Modello predefinito attuale:
 
 `gemini-3.5-flash-lite`
 
+## Scansione diretta da iPhone
+
+La versione 0.4.0 espone questo endpoint autenticato:
+
+`POST /api/food_scanner/upload`
+
+L'endpoint richiede la normale autenticazione Home Assistant tramite header:
+
+`Authorization: Bearer TOKEN`
+
+Il corpo della richiesta deve essere la foto stessa in JPEG, PNG o WEBP. Sono accettati file fino a 12 MB.
+
+Il risultato viene restituito immediatamente in JSON, per esempio:
+
+```json
+{
+  "success": true,
+  "product_name": "Yogurt bianco",
+  "brand": "Müller",
+  "quantity": "125 g",
+  "barcode": null,
+  "expiry_date": "2026-08-30",
+  "expiry_type": "scadenza",
+  "confidence": 96
+}
+```
+
+### Sicurezza
+
+Il token Home Assistant è una credenziale sensibile: non inserirlo in screenshot, chat, repository o note condivise. Conservalo solo nel tuo Comando Rapido personale.
+
 ## Test con una foto locale
 
-Metti una foto in una cartella accessibile da Home Assistant, per esempio:
-
-`/config/www/test_alimento.png`
-
-Poi esegui:
+Resta disponibile anche il servizio tradizionale:
 
 ```yaml
 action: food_scanner.scan_image
@@ -59,9 +88,14 @@ data:
   notify: true
 ```
 
-Se la lettura riesce, Food Scanner aggiorna `sensor.food_scanner_last_result` e mostra una notifica con i dati riconosciuti.
-
 ## Versioni
+
+### 0.4.0
+- upload diretto delle foto da iPhone/Comandi Rapidi
+- endpoint `/api/food_scanner/upload` protetto dall'autenticazione Home Assistant
+- nessun salvataggio obbligatorio della foto su disco
+- risposta JSON immediata al telefono
+- riconoscimento automatico JPEG/PNG/WEBP anche se iOS invia il file come dati generici
 
 ### 0.3.2
 - corretta la compatibilità delle notifiche con Home Assistant 2026.x
@@ -78,8 +112,6 @@ Se la lettura riesce, Food Scanner aggiorna `sensor.food_scanner_last_result` e 
 
 ## Prossimi sviluppi
 
-- acquisizione diretta della foto da iPhone tramite Comandi Rapidi
-- caricamento automatico della foto in Home Assistant
 - archivio persistente degli alimenti
 - gestione frigorifero / freezer / dispensa
 - notifiche automatiche delle scadenze
