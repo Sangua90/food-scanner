@@ -22,7 +22,7 @@ from .units import async_install_standard_units
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
 PANEL_STATIC_URL = "/food_scanner_static"
-PANEL_VERSION = "1.1.2"
+PANEL_VERSION = "1.1.3"
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -85,7 +85,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             webcomponent_name="food-scanner-panel",
             sidebar_title="Food Scanner",
             sidebar_icon="mdi:food-apple-outline",
-            module_url=f"{PANEL_STATIC_URL}/panel_boot.js?v={PANEL_VERSION}",
+            module_url=f"{PANEL_STATIC_URL}/panel_v112.js?v={PANEL_VERSION}",
             require_admin=False,
         )
     runtime["panel_registered"] = True
