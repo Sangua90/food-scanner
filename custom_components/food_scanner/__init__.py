@@ -12,6 +12,7 @@ from .archive import get_archive
 from .archive_api import FoodScannerArchiveView
 from .const import DOMAIN
 from .expiry import ExpiryNotifier
+from .review import get_review_queue
 from .service import async_setup_services
 
 RUNTIME_KEY = f"{DOMAIN}_runtime"
@@ -28,10 +29,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = entry
 
     runtime = hass.data.setdefault(RUNTIME_KEY, {})
+
     archive = get_archive(hass)
     if not runtime.get("archive_loaded"):
         await archive.async_load()
         runtime["archive_loaded"] = True
+
+    review_queue = get_review_queue(hass)
+    if not runtime.get("review_queue_loaded"):
+        await review_queue.async_load()
+        runtime["review_queue_loaded"] = True
 
     await async_setup_services(hass)
 
