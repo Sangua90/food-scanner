@@ -13,7 +13,13 @@ from .review import get_review_queue
 
 VALID_SORTS = {"expiry", "name", "added"}
 VALID_LOCATIONS = {"frigo", "freezer", "dispensa"}
-SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+SUPPORTED_MIME_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+}
 MAX_RETRY_IMAGE_BYTES = 12 * 1024 * 1024
 
 
@@ -58,27 +64,49 @@ class FoodScannerArchiveView(HomeAssistantView):
         try:
             data = await request.json()
         except ValueError:
-            return self.json_message("JSON non valido", status_code=HTTPStatus.BAD_REQUEST)
+            return self.json_message(
+                "JSON non valido",
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
 
         action = str(data.get("action") or "").strip().lower()
         product_id = str(data.get("id") or "").strip()
         if not product_id:
-            return self.json_message("Parametro id mancante", status_code=HTTPStatus.BAD_REQUEST)
+            return self.json_message(
+                "Parametro id mancante",
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
 
         if action == "retry_review":
             pending = queue.get(product_id)
             if pending is None:
-                return self.json_message("Verifica non trovata", status_code=HTTPStatus.NOT_FOUND)
+                return self.json_message(
+                    "Verifica non trovata",
+                    status_code=HTTPStatus.NOT_FOUND,
+                )
+
             mime_type = str(data.get("mime_type") or "image/jpeg").lower()
             if mime_type not in SUPPORTED_MIME_TYPES:
-                return self.json_message("Formato foto non supportato", status_code=HTTPStatus.BAD_REQUEST)
+                return self.json_message(
+                    "Formato foto non supportato",
+                    status_code=HTTPStatus.BAD_REQUEST,
+                )
+
             raw = str(data.get("image_data") or "")
             try:
                 image_bytes = base64.b64decode(raw, validate=True)
             except (ValueError, TypeError):
-                return self.json_message("Foto non valida", status_code=HTTPStatus.BAD_REQUEST)
+                return self.json_message(
+                    "Foto non valida",
+                    status_code=HTTPStatus.BAD_REQUEST,
+                )
+
             if not image_bytes or len(image_bytes) > MAX_RETRY_IMAGE_BYTES:
-                return self.json_message("Foto vuota o troppo grande", status_code=HTTPStatus.BAD_REQUEST)
+                return self.json_message(
+                    "Foto vuota o troppo grande",
+                    status_code=HTTPStatus.BAD_REQUEST,
+                )
+
             try:
                 from .service import async_analyze_image_bytes
 
@@ -90,7 +118,10 @@ class FoodScannerArchiveView(HomeAssistantView):
                     review_id=product_id,
                 )
             except HomeAssistantError as err:
-                return self.json_message(str(err), status_code=HTTPStatus.BAD_REQUEST)
+                return self.json_message(
+                    str(err),
+                    status_code=HTTPStatus.BAD_REQUEST,
+                )
             return self.json(result)
 
         if action == "confirm_review":
@@ -99,19 +130,28 @@ class FoodScannerArchiveView(HomeAssistantView):
 
                 result = await async_confirm_review(hass, product_id)
             except HomeAssistantError as err:
-                return self.json_message(str(err), status_code=HTTPStatus.BAD_REQUEST)
+                return self.json_message(
+                    str(err),
+                    status_code=HTTPStatus.BAD_REQUEST,
+                )
             return self.json({"success": True, **result})
 
         if action == "discard_review":
             removed = await queue.async_remove(product_id)
             if not removed:
-                return self.json_message("Verifica non trovata", status_code=HTTPStatus.NOT_FOUND)
+                return self.json_message(
+                    "Verifica non trovata",
+                    status_code=HTTPStatus.NOT_FOUND,
+                )
             return self.json({"success": True, "discarded_id": product_id})
 
         try:
             amount = int(data.get("amount", 1))
         except (TypeError, ValueError):
-            return self.json_message("Quantità non valida", status_code=HTTPStatus.BAD_REQUEST)
+            return self.json_message(
+                "Quantità non valida",
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
 
         try:
             if action == "consume":
@@ -124,10 +164,16 @@ class FoodScannerArchiveView(HomeAssistantView):
                     status_code=HTTPStatus.BAD_REQUEST,
                 )
         except ValueError as err:
-            return self.json_message(str(err), status_code=HTTPStatus.BAD_REQUEST)
+            return self.json_message(
+                str(err),
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
 
         if result is None:
-            return self.json_message("Prodotto non trovato", status_code=HTTPStatus.NOT_FOUND)
+            return self.json_message(
+                "Prodotto non trovato",
+                status_code=HTTPStatus.NOT_FOUND,
+            )
 
         return self.json({"success": True, "item": result})
 
