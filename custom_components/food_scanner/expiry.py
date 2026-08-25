@@ -37,6 +37,25 @@ def _day_text(days: int) -> str:
     return f"scade tra {days} giorni"
 
 
+def _resolve_notify_target(hass: HomeAssistant, entry: ConfigEntry) -> tuple[str, str] | None:
+    configured = str(
+        entry.options.get(CONF_EXPIRY_NOTIFY_SERVICE, DEFAULT_EXPIRY_NOTIFY_SERVICE) or ""
+    ).strip()
+    if configured:
+        if "." in configured:
+            domain, service = configured.split(".", 1)
+        else:
+            domain, service = "notify", configured
+        if hass.services.has_service(domain, service):
+            return domain, service
+
+    services = hass.services.async_services().get("notify", {})
+    mobile = [name for name in services if name.startswith("mobile_app_")]
+    if len(mobile) == 1:
+        return "notify", mobile[0]
+    return None
+
+
 class ExpiryNotifier:
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
@@ -59,7 +78,10 @@ class ExpiryNotifier:
             minute=0,
             second=0,
         )
-        self.hass.async_create_task(self.async_check(), eager_start=True)
+        self.hass.async_create_background_task(
+            self.async_check(),
+            "food_scanner_initial_expiry_check",
+        )
 
     async def async_unload(self) -> None:
         if self._unsub:
@@ -104,29 +126,25 @@ class ExpiryNotifier:
 
         title = "Food Scanner — scadenze"
         message = "\n".join(lines)
-        service_name = str(
-            self.entry.options.get(CONF_EXPIRY_NOTIFY_SERVICE, DEFAULT_EXPIRY_NOTIFY_SERVICE) or ""
-        ).strip()
-
         delivered = False
-        if service_name:
-            if "." in service_name:
-                domain, service = service_name.split(".", 1)
-            else:
-                domain, service = "notify", service_name
-            if self.hass.services.has_service(domain, service):
-                try:
-                    await self.hass.services.async_call(
-                        domain,
-                        service,
-                        {"title": title, "message": message},
-                        blocking=True,
-                    )
-                    delivered = True
-                except Exception:
-                    _LOGGER.exception("Invio notifica scadenze Food Scanner fallito")
-            else:
-                _LOGGER.warning("Servizio notifica Food Scanner non trovato: %s", service_name)
+
+        target = _resolve_notify_target(self.hass, self.entry)
+        if target:
+            domain, service = target
+            try:
+                await self.hass.services.async_call(
+                    domain,
+                    service,
+                    {
+                        "title": title,
+                        "message": message,
+                        "data": {"url": "/food-scanner"},
+                    },
+                    blocking=True,
+                )
+                delivered = True
+            except Exception:
+                _LOGGER.exception("Invio notifica scadenze Food Scanner fallito")
 
         if not delivered:
             async_create_persistent_notification(
