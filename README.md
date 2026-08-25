@@ -1,162 +1,123 @@
 # Food Scanner per Home Assistant
 
-Food Scanner è un'integrazione personalizzata per Home Assistant che usa Google Gemini per leggere le confezioni alimentari e gestire un vero magazzino di **frigo, freezer e dispensa**.
+Food Scanner usa Google Gemini per leggere confezioni alimentari e gestire un magazzino di **frigo, freezer e dispensa** direttamente da Home Assistant.
 
 ## Funzioni principali
 
-- scansione da iPhone tramite Comandi Rapidi
+- scansione rapida da iPhone tramite Comandi Rapidi
 - riconoscimento di nome, marca, formato, EAN/GTIN e scadenza/TMC
-- riconoscimento dei multipack e delle unità contenute nella confezione
-- archivio persistente separato dal Recorder di Home Assistant
-- raggruppamento dello stesso prodotto nello stesso lotto
+- riconoscimento multipack e unità realmente consumabili
+- archivio persistente separato dal Recorder
 - lotti separati quando cambia la scadenza
-- conteggio delle unità realmente consumabili
-- rimozione di 1, 2 o più unità senza cancellare tutto il lotto
-- correzione manuale della quantità di magazzino
-- ordinamento per scadenza, alfabetico o data di inserimento
-- filtri Frigo / Freezer / Dispensa e ricerca per nome, marca o EAN
-- notifiche automatiche delle scadenze con anticipo configurabile
-- coda **Da verificare** quando l'AI non è abbastanza sicura
-- possibilità di aggiungere una seconda foto in seguito senza interrompere le altre scansioni
-- pannello Food Scanner direttamente nella barra laterale di Home Assistant
+- consumo parziale di 1, 2 o più unità
+- modifica e inserimento manuale
+- filtri Frigo / Freezer / Dispensa
+- ordinamento per scadenza, alfabetico o inserimento
+- ricerca per nome, marca, EAN o categoria
+- notifiche di scadenza con anticipo configurabile
+- coda **Da verificare** con seconda foto collegata alla scansione originale
+- categorie automatiche
+- arricchimento barcode tramite Open Food Facts
+- statistiche su consumi e prodotti scaduti
+- esportazione CSV e backup JSON
+- dashboard completa nella barra laterale di Home Assistant
 
-## Come funziona la scansione
+## Scansione
 
-Il flusso principale è:
+`iPhone → scegli Frigo/Freezer/Dispensa → foto → Home Assistant → risposta immediata → Gemini in background`
 
-`iPhone → scelta Frigo/Freezer/Dispensa → foto → Home Assistant → risposta immediata → analisi Gemini in background`
+La foto non viene conservata nel magazzino. Se Gemini non è sufficientemente sicuro o manca un dato importante, la scansione finisce in **Da verificare** e puoi continuare a scansionare altri prodotti.
 
-La foto viene elaborata in memoria e Food Scanner non la conserva nel magazzino.
+## Barcode e Open Food Facts
 
-Se i dati sono sufficientemente affidabili, il prodotto entra direttamente nel magazzino.
+Se Gemini legge un EAN/GTIN valido, Food Scanner prova automaticamente a cercarlo su Open Food Facts per completare nome, marca, formato, categoria e miniatura del prodotto. La scadenza continua invece a provenire dalla foto, perché è specifica della confezione che hai in casa.
 
-Se mancano dati importanti come la scadenza, il nome o il numero di pezzi di un multipack, la scansione viene messa nella sezione **Da verificare**. Puoi continuare a scansionare altri prodotti e tornare in seguito su quella scansione per aggiungere una seconda foto.
+Il pannello contiene anche una ricerca manuale barcode.
 
 ## Multipack e quantità
 
-Food Scanner distingue la confezione dalle unità consumabili.
+Food Scanner distingue confezione e unità consumabili:
 
-Esempi:
+- scatola da 10 merendine → **10 merendine**
+- tonno `3 x 80 g` → **3 lattine**
+- pacco da 6 bottiglie → **6 bottiglie**
+- bottiglia singola → **1 bottiglia**
 
-- una scatola con 10 merendine aggiunge **10 merendine** al magazzino
-- una confezione `3 x 80 g` di tonno aggiunge **3 lattine**
-- un pacco da 6 bottiglie aggiunge **6 bottiglie**
-- una singola bottiglia aggiunge **1 bottiglia**
-- un pacco di pasta da 500 g normalmente aggiunge **1 confezione**
+Prodotti identici con la stessa posizione e scadenza vengono sommati nello stesso lotto; scadenze diverse restano separate.
 
-Se la quantità viene letta male, dal pannello Food Scanner puoi usare **Correggi quantità**.
+## Dashboard laterale
 
-## Lotti e scadenze
+La dashboard **Food Scanner** contiene quattro sezioni:
 
-Due scansioni vengono sommate nello stesso lotto solo quando sono compatibili per prodotto, formato, posizione e scadenza.
+- **Magazzino**: prodotti, quantità, scadenze, categorie, consumo, modifica ed eliminazione
+- **Da verificare**: seconda foto, salva comunque o scarta
+- **Statistiche**: consumati, scaduti, ultime attività, categorie, export e backup
+- **Impostazioni**: notifiche, giorni di preavviso e modello Gemini
 
-Per esempio, 3 yogurt con scadenza 28/08 e 3 yogurt identici con scadenza 31/08 restano due lotti diversi. In questo modo l'ordine delle scadenze e le notifiche restano corretti.
+## Statistiche
 
-## Pannello Food Scanner
+- ogni uso del pulsante **Consuma** incrementa le unità consumate
+- se elimini completamente un lotto già scaduto, viene conteggiato come **scaduto**
+- se elimini un lotto non scaduto, viene registrato come semplice rimozione
+- le correzioni manuali della quantità non vengono conteggiate come consumo
 
-Dopo l'installazione compare **Food Scanner** nella barra laterale di Home Assistant.
+Lo storico è persistente ma limitato agli ultimi 5000 eventi per evitare crescita indefinita.
 
-Dal pannello puoi:
+## Export e backup
 
-- vedere il magazzino ordinato per scadenza
-- filtrare Frigo, Freezer e Dispensa
-- ordinare alfabeticamente
-- cercare un prodotto
-- togliere rapidamente `-1` o `-2`
-- scegliere quante unità consumare
-- correggere la quantità
-- eliminare completamente un lotto
-- gestire le scansioni **Da verificare**
-- scattare una seconda foto direttamente dall'iPhone per completare una scansione incerta
+Dalla scheda **Statistiche** puoi scaricare:
 
-## Notifiche di scadenza
+- **CSV** del magazzino, compatibile con Excel/Numbers
+- **Backup JSON** con magazzino, storico e statistiche
 
-Vai in:
+## Notifiche scadenza
 
-**Impostazioni → Dispositivi e servizi → Food Scanner → Configura**
+Puoi scegliere quanti giorni prima ricevere l'avviso. Se hai un solo servizio `notify.mobile_app_*`, Food Scanner prova a usarlo automaticamente; altrimenti puoi indicare manualmente il servizio notifiche.
 
-Puoi scegliere:
+## Installazione HACS
 
-- se ricevere notifiche dopo le scansioni
-- se attivare le notifiche automatiche delle scadenze
-- quanti giorni prima essere avvisato
-- un servizio notifiche specifico del telefono, se necessario
+1. HACS → Integrazioni → Repository personalizzati.
+2. Aggiungi `https://github.com/Sangua90/food-scanner` come **Integrazione**.
+3. Installa o aggiorna Food Scanner.
+4. Riavvia Home Assistant.
+5. Impostazioni → Dispositivi e servizi → Food Scanner.
+6. Inserisci la API key Gemini se è una nuova installazione.
 
-Se Home Assistant trova un solo servizio `notify.mobile_app_*`, Food Scanner prova a usarlo automaticamente. Altrimenti resta disponibile la notifica persistente di Home Assistant.
+Modello predefinito: `gemini-3.5-flash-lite`.
 
-Le notifiche di scadenza vengono controllate giornalmente e non vengono ripetute continuamente per lo stesso lotto e la stessa soglia.
-
-## Installazione tramite HACS
-
-1. Apri **HACS**.
-2. Vai in **Integrazioni**.
-3. Apri il menu in alto a destra e scegli **Repository personalizzati**.
-4. Aggiungi `https://github.com/Sangua90/food-scanner` come tipo **Integrazione**.
-5. Installa **Food Scanner**.
-6. Riavvia Home Assistant.
-7. Vai in **Impostazioni → Dispositivi e servizi → Aggiungi integrazione → Food Scanner**.
-8. Inserisci la tua API key Gemini.
-
-Modello predefinito:
-
-`gemini-3.5-flash-lite`
-
-## Scansione diretta da iPhone
+## Scansione iPhone
 
 Endpoint autenticato:
 
 `POST /api/food_scanner/upload`
 
-L'endpoint richiede la normale autenticazione Home Assistant:
-
-`Authorization: Bearer TOKEN`
-
-Posizione del prodotto:
+Posizione:
 
 - `?location=frigo`
 - `?location=freezer`
 - `?location=dispensa`
 
-Sono accettate immagini JPEG, PNG o WEBP fino a 12 MB.
+Formati supportati: JPEG, PNG, WEBP, HEIC e HEIF, fino a 12 MB.
 
-Dalla versione 0.5.1 l'endpoint risponde immediatamente con `202 Accepted`; l'analisi prosegue in Home Assistant, evitando i timeout di Comandi Rapidi.
+L'endpoint risponde subito con `202 Accepted`; l'analisi continua in Home Assistant, evitando i timeout di Comandi Rapidi.
 
-## Entità create
+## Entità
 
 - `sensor.food_scanner_last_result`
 - `sensor.food_scanner_archive_count`
 - `sensor.food_scanner_next_expiry`
 - `sensor.food_scanner_to_review`
 
-## Servizi disponibili
+## Versione 1.1.0
 
-- `food_scanner.scan_image`
-- `food_scanner.consume_product`
-- `food_scanner.set_stock`
-- `food_scanner.remove_product`
-- `food_scanner.clear_archive`
+La 1.1 aggiunge:
 
-La gestione quotidiana è comunque pensata per essere fatta dal pannello Food Scanner, senza usare manualmente gli ID.
-
-## Sicurezza
-
-Il token Home Assistant e la API key Gemini sono credenziali sensibili. Non inserirli in screenshot, chat, repository o note condivise.
-
-Le foto inviate per l'analisi non vengono archiviate da Food Scanner: vengono inviate a Gemini per l'elaborazione e poi scartate dalla logica dell'integrazione.
-
-## Versione 1.0.0
-
-La 1.0 introduce:
-
-- magazzino persistente
-- Frigo / Freezer / Dispensa
-- lotti e quantità
-- multipack
-- consumo parziale
-- correzione quantità
-- ordinamento e ricerca
-- pannello laterale
-- notifiche scadenze configurabili
-- coda Da verificare
-- seconda foto collegata alla scansione originale
-- icona locale dell'integrazione
+- Open Food Facts
+- categorie automatiche
+- miniature prodotto quando disponibili
+- statistiche persistenti
+- storico consumi/scaduti
+- esportazione CSV
+- backup JSON
+- ricerca manuale barcode
+- nuova scheda Statistiche nella dashboard laterale
