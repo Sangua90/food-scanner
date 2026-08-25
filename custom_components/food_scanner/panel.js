@@ -123,10 +123,13 @@ class FoodScannerPanel extends HTMLElement {
   async _retryReview(id, file) {
     if (!file) return;
     if (file.size > 12 * 1024 * 1024) return alert("Foto troppo grande: massimo 12 MB");
-    let mime = (file.type || "image/jpeg").toLowerCase();
-    if (!["image/jpeg", "image/png", "image/webp"].includes(mime)) {
-      return alert("Formato non supportato. Scatta la foto in JPEG oppure usa il Comando Rapido.");
+
+    const mime = (file.type || "image/jpeg").toLowerCase();
+    const supported = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
+    if (!supported.includes(mime)) {
+      return alert("Formato non supportato. Usa JPEG, PNG, WEBP, HEIC o HEIF.");
     }
+
     this._busyReview = id;
     this._render();
     try {
@@ -224,7 +227,7 @@ class FoodScannerPanel extends HTMLElement {
         <div class="reviewRequest">${this._esc(request)}</div>
         <div class="details">Manca/è incerto: ${this._esc(missing)} · Tentativi: ${this._esc(review.attempts || 1)}</div>
         <div class="actions">
-          <input id="photo-${id}" data-review-photo data-id="${id}" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" hidden>
+          <input id="photo-${id}" data-review-photo data-id="${id}" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" capture="environment" hidden>
           <button ${busy ? "disabled" : ""} data-action="retry" data-id="${id}">${busy ? "Analisi…" : "Fotografa di nuovo"}</button>
           <button class="secondary" ${busy ? "disabled" : ""} data-action="confirm-review" data-id="${id}">Salva comunque</button>
           <button class="dangerBtn" ${busy ? "disabled" : ""} data-action="discard-review" data-id="${id}">Scarta</button>
