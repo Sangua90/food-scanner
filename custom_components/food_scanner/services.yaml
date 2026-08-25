@@ -1,0 +1,16 @@
+scan_image:
+  name: Analizza foto alimento
+  description: Analizza con Gemini una foto alimentare presente nel filesystem di Home Assistant.
+  fields:
+    image_path:
+      name: Percorso immagine
+      description: Percorso completo, ad esempio /config/www/test_alimento.png
+      required: true
+      selector:
+        text:
+    notify:
+      name: Notifica
+      description: Mostra una notifica persistente con il risultato.
+      required: false
+      selector:
+        boolean:
