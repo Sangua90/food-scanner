@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import uuid
 from http import HTTPStatus
 
 from aiohttp import web
@@ -8,6 +10,8 @@ from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.exceptions import HomeAssistantError
 
 from .service import async_analyze_image_bytes
+
+_LOGGER = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -26,8 +30,24 @@ def _detect_mime(image_bytes: bytes, declared: str) -> str | None:
     return None
 
 
+async def _process_scan(hass, image_bytes: bytes, mime_type: str, notify: bool, location: str | None, job_id: str) -> None:
+    """Esegue Gemini in background dopo che l'iPhone ha già ricevuto conferma."""
+    try:
+        await async_analyze_image_bytes(
+            hass,
+            image_bytes,
+            mime_type,
+            notify=notify,
+            location=location,
+        )
+    except HomeAssistantError as err:
+        _LOGGER.error("Scansione %s fallita: %s", job_id, err)
+    except Exception:
+        _LOGGER.exception("Errore inatteso durante la scansione %s", job_id)
+
+
 class FoodScannerUploadView(HomeAssistantView):
-    """Endpoint autenticato per caricare direttamente una foto."""
+    """Endpoint autenticato per caricare una foto e rispondere subito all'iPhone."""
 
     url = "/api/food_scanner/upload"
     name = "api:food_scanner:upload"
@@ -66,26 +86,19 @@ class FoodScannerUploadView(HomeAssistantView):
                     status_code=HTTPStatus.BAD_REQUEST,
                 )
 
-        try:
-            result = await async_analyze_image_bytes(
-                hass,
-                image_bytes,
-                mime_type,
-                notify=notify,
-                location=location,
-            )
-        except HomeAssistantError as err:
-            return self.json(
-                {"success": False, "error": str(err)},
-                status_code=HTTPStatus.BAD_REQUEST,
-            )
-        except Exception as err:
-            return self.json(
-                {
-                    "success": False,
-                    "error": f"Errore interno Food Scanner: {type(err).__name__}: {err}",
-                },
-                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-            )
+        job_id = uuid.uuid4().hex[:12]
+        hass.async_create_background_task(
+            _process_scan(hass, image_bytes, mime_type, notify, location, job_id),
+            f"food_scanner_{job_id}",
+        )
 
-        return self.json(result)
+        return self.json(
+            {
+                "success": True,
+                "accepted": True,
+                "job_id": job_id,
+                "location": location,
+                "message": "Foto ricevuta. Analisi in corso; il risultato arriverà tramite notifica Home Assistant.",
+            },
+            status_code=HTTPStatus.ACCEPTED,
+        )
