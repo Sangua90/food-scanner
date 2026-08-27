@@ -21,7 +21,7 @@ from .units import async_install_standard_units
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
 PANEL_STATIC_URL = "/food_scanner_static"
-PANEL_VERSION = "1.5.0"
+PANEL_VERSION = "1.5.1"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
@@ -71,16 +71,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ])
         runtime["panel_static_registered"] = True
 
-    if not frontend.async_panel_exists(hass, PANEL_URL_PATH):
-        await panel_custom.async_register_panel(
-            hass=hass,
-            frontend_url_path=PANEL_URL_PATH,
-            webcomponent_name="food-scanner-panel",
-            sidebar_title="HomeStock",
-            sidebar_icon="mdi:home-analytics",
-            module_url=f"{PANEL_STATIC_URL}/panel_v150.js?v={PANEL_VERSION}",
-            require_admin=False,
-        )
+    if frontend.async_panel_exists(hass, PANEL_URL_PATH):
+        frontend.async_remove_panel(hass, PANEL_URL_PATH)
+
+    await panel_custom.async_register_panel(
+        hass=hass,
+        frontend_url_path=PANEL_URL_PATH,
+        webcomponent_name="food-scanner-panel",
+        sidebar_title="HomeStock",
+        sidebar_icon="mdi:home-analytics",
+        module_url=f"{PANEL_STATIC_URL}/panel_boot.js?v={PANEL_VERSION}",
+        require_admin=False,
+    )
     runtime["panel_registered"] = True
 
     old_notifier = runtime.pop("expiry_notifier", None)
