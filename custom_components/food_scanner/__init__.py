@@ -21,7 +21,7 @@ from .units import async_install_standard_units
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
 PANEL_STATIC_URL = "/food_scanner_static"
-PANEL_VERSION = "1.5.2"
+PANEL_VERSION = "1.5.3"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
