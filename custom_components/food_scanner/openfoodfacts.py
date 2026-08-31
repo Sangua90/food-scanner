@@ -41,6 +41,33 @@ def _clean(value: Any) -> str | None:
     return text or None
 
 
+def _number(value: Any) -> float | None:
+    try:
+        return round(float(value), 3)
+    except (TypeError, ValueError):
+        return None
+
+
+def _nutrition(nutriments: Any) -> dict[str, Any] | None:
+    if not isinstance(nutriments, dict):
+        return None
+    result = {
+        "basis": "100g",
+        "energy_kcal": _number(nutriments.get("energy-kcal_100g")),
+        "protein_g": _number(nutriments.get("proteins_100g")),
+        "carbohydrates_g": _number(nutriments.get("carbohydrates_100g")),
+        "sugars_g": _number(nutriments.get("sugars_100g")),
+        "fat_g": _number(nutriments.get("fat_100g")),
+        "saturated_fat_g": _number(nutriments.get("saturated-fat_100g")),
+        "fiber_g": _number(nutriments.get("fiber_100g")),
+        "salt_g": _number(nutriments.get("salt_100g")),
+        "sodium_g": _number(nutriments.get("sodium_100g")),
+    }
+    if not any(v is not None for k, v in result.items() if k != "basis"):
+        return None
+    return result
+
+
 async def async_lookup_barcode(hass: HomeAssistant, barcode: str | None) -> dict[str, Any] | None:
     code = "".join(ch for ch in str(barcode or "") if ch.isdigit())
     if len(code) < 8 or len(code) > 14:
@@ -48,7 +75,7 @@ async def async_lookup_barcode(hass: HomeAssistant, barcode: str | None) -> dict
 
     session = async_get_clientsession(hass)
     params = {
-        "fields": "code,product_name,product_name_it,brands,quantity,categories_tags,image_front_small_url",
+        "fields": "code,product_name,product_name_it,brands,quantity,categories_tags,image_front_small_url,nutriments",
     }
     try:
         async with session.get(
@@ -81,6 +108,7 @@ async def async_lookup_barcode(hass: HomeAssistant, barcode: str | None) -> dict
         "quantity": _clean(product.get("quantity")),
         "category": _simple_category(tags),
         "image_url": _clean(product.get("image_front_small_url")),
+        "nutrition": _nutrition(product.get("nutriments")),
         "source": "open_food_facts",
     }
 
@@ -103,6 +131,8 @@ def merge_off_data(food: dict[str, Any], off: dict[str, Any] | None) -> dict[str
 
     if off.get("image_url"):
         merged["product_image_url"] = off["image_url"]
+    if off.get("nutrition"):
+        merged["nutrition"] = off["nutrition"]
     merged["barcode_source"] = "Open Food Facts"
     merged["open_food_facts_found"] = True
     return merged
