@@ -13,6 +13,11 @@ from .consumables_api import FoodScannerConsumablesView
 from .expiry import ExpiryNotifier
 from .export_api import FoodScannerExportDataView, FoodScannerExportView
 from .history import get_history
+from .informha_api import (
+    HomeStockInFormhaBarcodeView,
+    HomeStockInFormhaCatalogView,
+    HomeStockInFormhaScanView,
+)
 from .review import get_review_queue
 from .scan_api import FoodScannerDashboardScanView
 from .service import async_setup_services
@@ -21,7 +26,7 @@ from .units import async_install_standard_units
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
 PANEL_STATIC_URL = "/food_scanner_static"
-PANEL_VERSION = "1.5.3"
+PANEL_VERSION = "1.6.0"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
@@ -56,6 +61,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ("archive_view_registered", FoodScannerArchiveView),
         ("dashboard_scan_view_registered", FoodScannerDashboardScanView),
         ("consumables_view_registered", FoodScannerConsumablesView),
+        ("informha_catalog_view_registered", HomeStockInFormhaCatalogView),
+        ("informha_barcode_view_registered", HomeStockInFormhaBarcodeView),
+        ("informha_scan_view_registered", HomeStockInFormhaScanView),
     ):
         if not runtime.get(key):
             hass.http.register_view(view); runtime[key] = True
