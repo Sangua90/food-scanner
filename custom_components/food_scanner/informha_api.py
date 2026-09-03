@@ -9,6 +9,7 @@ from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.exceptions import HomeAssistantError
 
 from .archive import get_archive
+from .nutrition_store import async_persist_nutrition
 from .openfoodfacts import async_lookup_barcode, merge_off_data
 from .service import _call_gemini
 
@@ -62,8 +63,6 @@ def _find_archive_by_barcode(hass, barcode: str) -> dict[str, Any] | None:
 
 
 class HomeStockInFormhaCatalogView(HomeAssistantView):
-    """Catalogo HomeStock normalizzato per InFormha."""
-
     url = "/api/food_scanner/informha/catalog"
     name = "api:food_scanner:informha:catalog"
     requires_auth = True
@@ -71,17 +70,10 @@ class HomeStockInFormhaCatalogView(HomeAssistantView):
     async def get(self, request):
         hass = request.app[KEY_HASS]
         items = [_catalog_item(item) for item in get_archive(hass).items_sorted(sort="name")]
-        return self.json({
-            "source": "HomeStock",
-            "domain": "food_scanner",
-            "count": len(items),
-            "items": items,
-        })
+        return self.json({"source": "HomeStock", "domain": "food_scanner", "count": len(items), "items": items})
 
 
 class HomeStockInFormhaBarcodeView(HomeAssistantView):
-    """Risoluzione barcode usando prima HomeStock e poi Open Food Facts."""
-
     url = "/api/food_scanner/informha/barcode/{barcode}"
     name = "api:food_scanner:informha:barcode"
     requires_auth = True
@@ -94,9 +86,10 @@ class HomeStockInFormhaBarcodeView(HomeAssistantView):
 
         stored = _find_archive_by_barcode(hass, code)
         off = await async_lookup_barcode(hass, code)
-
         if stored:
             merged = merge_off_data(dict(stored), off)
+            if off and off.get("nutrition"):
+                await async_persist_nutrition(hass, stored.get("id"), off.get("nutrition"))
             return self.json({"found": True, "in_stock": True, "item": _catalog_item(merged, "homestock")})
         if off:
             return self.json({"found": True, "in_stock": False, "item": _catalog_item(off, "open_food_facts")})
@@ -104,8 +97,6 @@ class HomeStockInFormhaBarcodeView(HomeAssistantView):
 
 
 class HomeStockInFormhaScanView(HomeAssistantView):
-    """Preview alimentare per InFormha: riusa foto/barcode HomeStock senza archiviare."""
-
     url = "/api/food_scanner/informha/scan"
     name = "api:food_scanner:informha:scan"
     requires_auth = True
@@ -123,6 +114,8 @@ class HomeStockInFormhaScanView(HomeAssistantView):
             off = await async_lookup_barcode(hass, barcode)
             if stored:
                 item = merge_off_data(dict(stored), off)
+                if off and off.get("nutrition"):
+                    await async_persist_nutrition(hass, stored.get("id"), off.get("nutrition"))
                 return self.json({"found": True, "method": "barcode", "in_stock": True, "item": _catalog_item(item, "homestock")})
             if off:
                 return self.json({"found": True, "method": "barcode", "in_stock": False, "item": _catalog_item(off, "open_food_facts")})
@@ -153,6 +146,8 @@ class HomeStockInFormhaScanView(HomeAssistantView):
             stock_data = dict(stored)
             stock_data.update({k: v for k, v in food.items() if v is not None})
             food = stock_data
+            if off and off.get("nutrition"):
+                await async_persist_nutrition(hass, stored.get("id"), off.get("nutrition"))
 
         return self.json({
             "found": bool(food.get("product_name") or food.get("barcode")),
