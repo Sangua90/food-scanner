@@ -4,10 +4,13 @@
     "step": {
       "user": {
         "title": "Configura HomeStock",
-        "description": "Configura Gemini per il riconoscimento intelligente di alimenti e consumabili. Il dominio tecnico resta food_scanner per preservare dati e configurazione.",
+        "description": "Configura Gemini per il riconoscimento intelligente di alimenti e consumabili. Il dominio tecnico resta food_scanner per preservare dati e configurazione. Il modello può essere cambiato in seguito dalle Opzioni senza reinstallare HomeStock.",
         "data": {
           "api_key": "API key Gemini",
-          "model": "Modello Gemini"
+          "model": "ID modello Gemini"
+        },
+        "data_description": {
+          "model": "Inserisci l'ID esatto del modello, ad esempio gemini-3.5-flash-lite. In futuro potrai sostituirlo con un nuovo ID dalle Opzioni di HomeStock."
         }
       }
     }
@@ -16,13 +19,16 @@
     "step": {
       "init": {
         "title": "Opzioni HomeStock",
-        "description": "Configura analisi e notifiche delle scadenze.",
+        "description": "Configura il modello Gemini, l'analisi e le notifiche. Per cambiare versione di Gemini basta sostituire l'ID del modello qui: non serve reinstallare o riscrivere HomeStock finché l'API resta compatibile.",
         "data": {
-          "model": "Modello Gemini",
+          "model": "ID modello Gemini",
           "notify": "Notifica dopo la scansione",
           "expiry_notify": "Notifiche automatiche scadenze",
           "expiry_notify_days": "Avvisa quanti giorni prima",
           "expiry_notify_service": "Servizio notifiche telefono (facoltativo)"
+        },
+        "data_description": {
+          "model": "ID del modello usato per foto e riconoscimento prodotti. Esempio: gemini-3.5-flash-lite. Puoi inserire anche un futuro modello compatibile senza modificare il codice."
         }
       }
     }
