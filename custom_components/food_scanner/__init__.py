@@ -18,6 +18,7 @@ from .informha_api import (
     HomeStockInFormhaCatalogView,
     HomeStockInFormhaScanView,
 )
+from .nutrition_store import install_nutrition_persistence
 from .review import get_review_queue
 from .scan_api import FoodScannerDashboardScanView
 from .service import async_setup_services
@@ -26,7 +27,7 @@ from .units import async_install_standard_units
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
 PANEL_STATIC_URL = "/food_scanner_static"
-PANEL_VERSION = "1.6.0"
+PANEL_VERSION = "1.6.1"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
@@ -36,6 +37,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.config_entries.async_update_entry(entry, title="HomeStock")
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = entry
     runtime = hass.data.setdefault(RUNTIME_KEY, {})
+
+    install_nutrition_persistence()
 
     archive = get_archive(hass)
     if not runtime.get("archive_loaded"):
