@@ -9,22 +9,30 @@ from .const import (
     DOMAIN,
     CONF_API_KEY,
     CONF_MODEL,
+    CONF_MODEL_MODE,
     CONF_NOTIFY,
     CONF_EXPIRY_NOTIFY,
     CONF_EXPIRY_NOTIFY_DAYS,
     CONF_EXPIRY_NOTIFY_SERVICE,
     DEFAULT_MODEL,
+    DEFAULT_MODEL_MODE,
     DEFAULT_NOTIFY,
     DEFAULT_EXPIRY_NOTIFY,
     DEFAULT_EXPIRY_NOTIFY_DAYS,
     DEFAULT_EXPIRY_NOTIFY_SERVICE,
+    MODEL_MODE_AUTO,
+    MODEL_MODE_MANUAL,
 )
 
-
 MODEL_SELECTOR = selector.TextSelector(
-    selector.TextSelectorConfig(
-        type=selector.TextSelectorType.TEXT,
-        autocomplete="off",
+    selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT, autocomplete="off")
+)
+
+MODEL_MODE_SELECTOR = selector.SelectSelector(
+    selector.SelectSelectorConfig(
+        options=[MODEL_MODE_AUTO, MODEL_MODE_MANUAL],
+        mode=selector.SelectSelectorMode.DROPDOWN,
+        translation_key="gemini_model_mode",
     )
 )
 
@@ -35,9 +43,11 @@ class FoodScannerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input=None):
         if user_input is not None:
             user_input[CONF_MODEL] = str(user_input.get(CONF_MODEL) or DEFAULT_MODEL).strip()
+            user_input[CONF_MODEL_MODE] = str(user_input.get(CONF_MODEL_MODE) or DEFAULT_MODEL_MODE).strip()
             return self.async_create_entry(title="HomeStock", data=user_input)
         schema = vol.Schema({
             vol.Required(CONF_API_KEY): str,
+            vol.Optional(CONF_MODEL_MODE, default=DEFAULT_MODEL_MODE): MODEL_MODE_SELECTOR,
             vol.Optional(CONF_MODEL, default=DEFAULT_MODEL): MODEL_SELECTOR,
         })
         return self.async_show_form(step_id="user", data_schema=schema)
@@ -52,13 +62,18 @@ class FoodScannerOptionsFlow(config_entries.OptionsFlowWithReload):
     async def async_step_init(self, user_input=None):
         if user_input is not None:
             user_input[CONF_MODEL] = str(user_input.get(CONF_MODEL) or DEFAULT_MODEL).strip()
+            user_input[CONF_MODEL_MODE] = str(user_input.get(CONF_MODEL_MODE) or DEFAULT_MODEL_MODE).strip()
             return self.async_create_entry(title="", data=user_input)
+
         current_model = self.config_entry.options.get(CONF_MODEL, self.config_entry.data.get(CONF_MODEL, DEFAULT_MODEL))
+        current_mode = self.config_entry.options.get(CONF_MODEL_MODE, self.config_entry.data.get(CONF_MODEL_MODE, DEFAULT_MODEL_MODE))
         current_notify = self.config_entry.options.get(CONF_NOTIFY, DEFAULT_NOTIFY)
         current_expiry_notify = self.config_entry.options.get(CONF_EXPIRY_NOTIFY, DEFAULT_EXPIRY_NOTIFY)
         current_expiry_days = self.config_entry.options.get(CONF_EXPIRY_NOTIFY_DAYS, DEFAULT_EXPIRY_NOTIFY_DAYS)
         current_notify_service = self.config_entry.options.get(CONF_EXPIRY_NOTIFY_SERVICE, DEFAULT_EXPIRY_NOTIFY_SERVICE)
+
         schema = vol.Schema({
+            vol.Optional(CONF_MODEL_MODE, default=current_mode): MODEL_MODE_SELECTOR,
             vol.Optional(CONF_MODEL, default=current_model): MODEL_SELECTOR,
             vol.Optional(CONF_NOTIFY, default=current_notify): bool,
             vol.Optional(CONF_EXPIRY_NOTIFY, default=current_expiry_notify): bool,
