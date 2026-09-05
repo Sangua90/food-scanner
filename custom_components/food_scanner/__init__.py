@@ -12,6 +12,7 @@ from .consumables import get_consumables
 from .consumables_api import FoodScannerConsumablesView
 from .expiry import ExpiryNotifier
 from .export_api import FoodScannerExportDataView, FoodScannerExportView
+from .gemini_compat import install_gemini_compat
 from .history import get_history
 from .informha_api import (
     HomeStockInFormhaBarcodeView,
@@ -27,7 +28,7 @@ from .units import async_install_standard_units
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
 PANEL_STATIC_URL = "/food_scanner_static"
-PANEL_VERSION = "1.6.2"
+PANEL_VERSION = "1.6.3"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
@@ -38,6 +39,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = entry
     runtime = hass.data.setdefault(RUNTIME_KEY, {})
 
+    install_gemini_compat()
     install_nutrition_persistence()
 
     archive = get_archive(hass)
