@@ -32,7 +32,6 @@ MODEL_MODE_SELECTOR = selector.SelectSelector(
     selector.SelectSelectorConfig(
         options=[MODEL_MODE_AUTO, MODEL_MODE_MANUAL],
         mode=selector.SelectSelectorMode.DROPDOWN,
-        translation_key="gemini_model_mode",
     )
 )
 
