@@ -2,11 +2,15 @@ DOMAIN = "food_scanner"
 
 CONF_API_KEY = "api_key"
 CONF_MODEL = "model"
+CONF_MODEL_MODE = "model_mode"
 CONF_NOTIFY = "notify"
 CONF_EXPIRY_NOTIFY = "expiry_notify"
 CONF_EXPIRY_NOTIFY_DAYS = "expiry_notify_days"
 CONF_EXPIRY_NOTIFY_SERVICE = "expiry_notify_service"
 
+MODEL_MODE_AUTO = "auto"
+MODEL_MODE_MANUAL = "manual"
+DEFAULT_MODEL_MODE = MODEL_MODE_AUTO
 DEFAULT_MODEL = "gemini-3.8-flash"
 DEFAULT_NOTIFY = True
 DEFAULT_EXPIRY_NOTIFY = True
