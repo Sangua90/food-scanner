@@ -26,7 +26,11 @@ class HomeStockShoppingView(HomeAssistantView):
         action = str(data.get("action") or "").strip().lower()
         try:
             if action == "add":
-                item = await store.async_add(data.get("name"))
+                item = await store.async_add(
+                    data.get("name"),
+                    kind=data.get("kind"),
+                    source_key=data.get("source_key"),
+                )
                 return self.json({"success": True, "item": item, "items": store.items()})
             if action == "toggle":
                 item = await store.async_toggle(str(data.get("id") or ""))
