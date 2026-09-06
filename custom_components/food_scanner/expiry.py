@@ -63,7 +63,7 @@ class ExpiryNotifier:
         self.entry = entry
         self.store = Store(hass, STORE_VERSION, STORE_KEY)
         self.sent: dict[str, str] = {}
-        self._unsub = None
+        self._unsubs: list[Any] = []
 
     async def async_setup(self) -> None:
         data = await self.store.async_load()
@@ -72,24 +72,28 @@ class ExpiryNotifier:
         else:
             self.sent = {}
 
-        # Controllo quotidiano alle 18:30 nell'ora locale di Home Assistant.
-        self._unsub = async_track_time_change(
-            self.hass,
-            self._scheduled_check,
-            hour=18,
-            minute=30,
-            second=0,
-        )
+        # Due controlli quotidiani nell'ora locale di Home Assistant:
+        # 11:30 prima di pranzo e 18:30 prima di cena.
+        for hour, minute, slot in ((11, 30, "11:30"), (18, 30, "18:30")):
+            async def _callback(now, slot_name=slot):
+                await self.async_check(slot_name)
+
+            self._unsubs.append(
+                async_track_time_change(
+                    self.hass,
+                    _callback,
+                    hour=hour,
+                    minute=minute,
+                    second=0,
+                )
+            )
 
     async def async_unload(self) -> None:
-        if self._unsub:
-            self._unsub()
-            self._unsub = None
+        for unsub in self._unsubs:
+            unsub()
+        self._unsubs = []
 
-    async def _scheduled_check(self, now) -> None:
-        await self.async_check()
-
-    async def async_check(self) -> None:
+    async def async_check(self, slot: str = "manual") -> None:
         if not self.entry.options.get(CONF_EXPIRY_NOTIFY, DEFAULT_EXPIRY_NOTIFY):
             return
 
@@ -98,15 +102,16 @@ class ExpiryNotifier:
         except (TypeError, ValueError):
             days = DEFAULT_EXPIRY_NOTIFY_DAYS
 
-        # Un avviso al giorno per ogni lotto durante tutta la finestra:
-        # es. soglia 3 -> -3, -2, -1 e giorno di scadenza.
+        # Un avviso per fascia oraria, per ogni lotto, durante tutta la finestra:
+        # es. soglia 3 -> 3, 2, 1 giorni prima e giorno di scadenza,
+        # sia alle 11:30 sia alle 18:30.
         today = dt_util.now().date().isoformat()
         candidates: list[tuple[dict[str, Any], str]] = []
         for item in get_archive(self.hass).expiring_within(days):
             remaining = int(item.get("days_until_expiry", 0))
             if remaining < 0 or remaining > days:
                 continue
-            marker = f"{item.get('id')}:{item.get('expiry_date')}:{today}"
+            marker = f"{item.get('id')}:{item.get('expiry_date')}:{today}:{slot}"
             if marker not in self.sent:
                 candidates.append((item, marker))
 
@@ -155,7 +160,7 @@ class ExpiryNotifier:
                 self.hass,
                 message,
                 title=title,
-                notification_id="food_scanner_expiry",
+                notification_id=f"food_scanner_expiry_{slot.replace(':', '')}",
             )
             delivered = True
 
@@ -163,8 +168,8 @@ class ExpiryNotifier:
             stamp = datetime.now(timezone.utc).isoformat()
             for _item, marker in candidates:
                 self.sent[marker] = stamp
-            if len(self.sent) > 2000:
-                newest = sorted(self.sent.items(), key=lambda x: x[1], reverse=True)[:1500]
+            if len(self.sent) > 3000:
+                newest = sorted(self.sent.items(), key=lambda x: x[1], reverse=True)[:2000]
                 self.sent = dict(newest)
             await self.store.async_save({"sent": self.sent})
 
