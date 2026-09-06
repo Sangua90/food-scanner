@@ -21,7 +21,7 @@ from .const import (
 )
 
 RUNTIME_KEY = f"{DOMAIN}_runtime"
-MODEL_RE = re.compile(r"^models/(gemini-(\d+)\.(\d+)-flash)$")
+MODEL_RE = re.compile(r"^models/(gemini-(\d+)\.(\d+)-flash(?:-lite)?)$")
 
 
 def _get_entry(hass: HomeAssistant):
@@ -40,7 +40,14 @@ def _model_mode(entry) -> str:
 
 
 def _is_modern_gemini(model: str) -> bool:
-    return model.startswith(("gemini-3.6-", "gemini-3.7-", "gemini-3.8-", "gemini-4-"))
+    return model.startswith(("gemini-3.5-", "gemini-3.6-", "gemini-3.7-", "gemini-3.8-", "gemini-4-"))
+
+
+def _model_rank(model: str, major: int, minor: int) -> tuple[int, int, int]:
+    # Prefer the newest normal Flash first, then Flash-Lite as an independent
+    # high-volume fallback with its own quota characteristics.
+    lite = 0 if model.endswith("-flash-lite") else 1
+    return (lite, major, minor)
 
 
 async def _list_flash_models(hass: HomeAssistant, api_key: str) -> list[str]:
@@ -63,7 +70,7 @@ async def _list_flash_models(hass: HomeAssistant, api_key: str) -> list[str]:
     except json.JSONDecodeError as err:
         raise HomeAssistantError("Risposta lista modelli Gemini non valida.") from err
 
-    ranked: list[tuple[tuple[int, int], str]] = []
+    ranked: list[tuple[tuple[int, int, int], str]] = []
     for item in payload.get("models", []):
         if not isinstance(item, dict):
             continue
@@ -75,7 +82,7 @@ async def _list_flash_models(hass: HomeAssistant, api_key: str) -> list[str]:
         if not match:
             continue
         model, major, minor = match.groups()
-        ranked.append(((int(major), int(minor)), model))
+        ranked.append((_model_rank(model, int(major), int(minor)), model))
 
     ranked.sort(reverse=True)
     return [model for _, model in ranked]
@@ -95,15 +102,21 @@ async def _candidate_models(hass: HomeAssistant, entry, api_key: str) -> list[st
         discovered = []
 
     candidates: list[str] = []
-    for model in discovered:
-        if model not in candidates:
+
+    if discovered:
+        # Trust the model list returned for this exact API key/project. This avoids
+        # retrying stale configured models that are no longer exposed to the user.
+        if last_good in discovered:
+            candidates.append(last_good)
+        for model in discovered:
+            if model not in candidates:
+                candidates.append(model)
+        return candidates
+
+    # If model discovery itself fails, use conservative known fallbacks.
+    for model in (last_good, DEFAULT_MODEL, "gemini-3.5-flash-lite", "gemini-3.5-flash", manual):
+        if model and model not in candidates:
             candidates.append(model)
-    if last_good and last_good not in candidates:
-        candidates.append(last_good)
-    if manual and manual not in candidates:
-        candidates.append(manual)
-    if DEFAULT_MODEL not in candidates:
-        candidates.append(DEFAULT_MODEL)
     return candidates
 
 
@@ -182,7 +195,7 @@ async def async_call_gemini_compat(
             if _model_mode(entry) != MODEL_MODE_AUTO:
                 raise
 
-    detail = " | ".join(errors[-3:])
+    detail = " | ".join(errors[-4:])
     raise HomeAssistantError(f"Nessun modello Gemini compatibile ha completato l'analisi. {detail}")
 
 
