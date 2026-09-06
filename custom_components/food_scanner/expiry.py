@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from .archive import get_archive
 from .const import (
@@ -71,16 +72,13 @@ class ExpiryNotifier:
         else:
             self.sent = {}
 
+        # Controllo quotidiano alle 18:30 nell'ora locale di Home Assistant.
         self._unsub = async_track_time_change(
             self.hass,
             self._scheduled_check,
-            hour=9,
-            minute=0,
+            hour=18,
+            minute=30,
             second=0,
-        )
-        self.hass.async_create_background_task(
-            self.async_check(),
-            "food_scanner_initial_expiry_check",
         )
 
     async def async_unload(self) -> None:
@@ -100,9 +98,15 @@ class ExpiryNotifier:
         except (TypeError, ValueError):
             days = DEFAULT_EXPIRY_NOTIFY_DAYS
 
+        # Un avviso al giorno per ogni lotto durante tutta la finestra:
+        # es. soglia 3 -> -3, -2, -1 e giorno di scadenza.
+        today = dt_util.now().date().isoformat()
         candidates: list[tuple[dict[str, Any], str]] = []
         for item in get_archive(self.hass).expiring_within(days):
-            marker = f"{item.get('id')}:{item.get('expiry_date')}:{days}"
+            remaining = int(item.get("days_until_expiry", 0))
+            if remaining < 0 or remaining > days:
+                continue
+            marker = f"{item.get('id')}:{item.get('expiry_date')}:{today}"
             if marker not in self.sent:
                 candidates.append((item, marker))
 
@@ -124,7 +128,7 @@ class ExpiryNotifier:
         if len(candidates) > 15:
             lines.append(f"• …e altri {len(candidates) - 15} lotti")
 
-        title = "Food Scanner — scadenze"
+        title = "HomeStock — scadenze"
         message = "\n".join(lines)
         delivered = False
 
@@ -144,7 +148,7 @@ class ExpiryNotifier:
                 )
                 delivered = True
             except Exception:
-                _LOGGER.exception("Invio notifica scadenze Food Scanner fallito")
+                _LOGGER.exception("Invio notifica scadenze HomeStock fallito")
 
         if not delivered:
             async_create_persistent_notification(
