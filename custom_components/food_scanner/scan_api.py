@@ -121,6 +121,14 @@ class FoodScannerDashboardScanView(HomeAssistantView):
         action = str(data.get("action") or "scan").strip().lower()
         review_id = str(data.get("review_id") or "").strip() or None
 
+        if action == "delete_review":
+            if not review_id:
+                return self.json_message("Verifica mancante", status_code=HTTPStatus.BAD_REQUEST)
+            removed = await get_review_queue(hass).async_remove(review_id)
+            if not removed:
+                return self.json_message("Verifica non trovata o già eliminata", status_code=HTTPStatus.NOT_FOUND)
+            return self.json({"success": True, "status": "deleted", "review_id": review_id})
+
         if action in {"skip_expiry", "complete_manual"}:
             if not review_id:
                 return self.json_message("Verifica mancante", status_code=HTTPStatus.BAD_REQUEST)
