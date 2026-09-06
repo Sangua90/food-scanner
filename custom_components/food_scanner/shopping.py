@@ -28,12 +28,37 @@ class ShoppingStore:
     def items(self) -> list[dict]:
         return [dict(x) for x in self._items]
 
-    async def async_add(self, name: str) -> dict:
+    async def async_add(self, name: str, kind: str | None = None, source_key: str | None = None) -> dict:
         name = " ".join(str(name or "").split()).strip()
         if not name:
             raise ValueError("Inserisci il nome del prodotto.")
-        item = {"id": uuid.uuid4().hex, "name": name, "checked": False, "created_at": dt_util.utcnow().isoformat()}
+        kind = str(kind or "").strip().lower() or None
+        source_key = str(source_key or "").strip() or None
         async with self._lock:
+            existing = next(
+                (
+                    x for x in self._items
+                    if not x.get("checked") and (
+                        (source_key and str(x.get("source_key") or "") == source_key)
+                        or (
+                            not source_key
+                            and str(x.get("name") or "").casefold() == name.casefold()
+                            and str(x.get("kind") or "") == str(kind or "")
+                        )
+                    )
+                ),
+                None,
+            )
+            if existing is not None:
+                return dict(existing)
+            item = {
+                "id": uuid.uuid4().hex,
+                "name": name,
+                "kind": kind,
+                "source_key": source_key,
+                "checked": False,
+                "created_at": dt_util.utcnow().isoformat(),
+            }
             self._items.append(item)
             await self._save()
         return dict(item)
