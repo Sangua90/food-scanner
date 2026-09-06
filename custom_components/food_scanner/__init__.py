@@ -25,13 +25,15 @@ from .review import get_review_queue
 from .scan_api import FoodScannerDashboardScanView
 from .scan_error_compat import install_scan_error_compat
 from .service import async_setup_services
+from .shopping import get_shopping
+from .shopping_api import HomeStockShoppingView
 from .units import async_install_standard_units
 from .zero_stock_compat import install_zero_stock_compat
 
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
 PANEL_STATIC_URL = "/food_scanner_static"
-PANEL_VERSION = "1.6.29"
+PANEL_VERSION = "1.6.30"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
@@ -65,6 +67,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not runtime.get("consumables_loaded"):
         await consumables.async_load(); runtime["consumables_loaded"] = True
 
+    shopping = get_shopping(hass)
+    if not runtime.get("shopping_loaded"):
+        await shopping.async_load(); runtime["shopping_loaded"] = True
+
     await async_setup_services(hass)
 
     for key, view in (
@@ -72,6 +78,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ("archive_view_registered", FoodScannerArchiveView),
         ("dashboard_scan_view_registered", FoodScannerDashboardScanView),
         ("consumables_view_registered", FoodScannerConsumablesView),
+        ("shopping_view_registered", HomeStockShoppingView),
         ("informha_catalog_view_registered", HomeStockInFormhaCatalogView),
         ("informha_barcode_view_registered", HomeStockInFormhaBarcodeView),
         ("informha_scan_view_registered", HomeStockInFormhaScanView),
