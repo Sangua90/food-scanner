@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import re
+from datetime import date
 from http import HTTPStatus
 
 from homeassistant.components.http import KEY_HASS
@@ -27,12 +28,6 @@ MULTIPACK_RE = re.compile(r"\b\d+\s*[x×]\s*\d+", re.IGNORECASE)
 
 
 def _can_skip_expiry(food: dict) -> bool:
-    """Allow saving without expiry when the product itself is reliable enough.
-
-    Brand/barcode/category are useful metadata but must not block a skip. We only
-    stop when the actual product identity is missing, confidence is too low, or
-    a multipack quantity is still unresolved.
-    """
     if not str(food.get("product_name") or "").strip():
         return False
     try:
@@ -60,10 +55,53 @@ def _can_skip_expiry(food: dict) -> bool:
     if missing & essential_missing:
         return False
 
-    # The button is exposed only for expiry review, but keep the backend tolerant
-    # of older pending records where photo_target was not stored consistently.
     target = str(food.get("photo_target") or "").strip().casefold()
     return target == "expiry" or not food.get("expiry_date") or bool(missing & EXPIRY_FIELDS)
+
+
+def _manual_food(previous: dict, changes: dict) -> dict:
+    food = dict(previous)
+
+    name = str(changes.get("product_name", food.get("product_name") or "")).strip()
+    if not name:
+        raise ValueError("Inserisci almeno il nome del prodotto.")
+    food["product_name"] = name
+
+    for key in ("brand", "quantity", "barcode", "expiry_type", "category", "package_type", "unit_name"):
+        if key in changes:
+            value = str(changes.get(key) or "").strip()
+            food[key] = value or None
+
+    raw_expiry = str(changes.get("expiry_date", food.get("expiry_date") or "")).strip()
+    if raw_expiry:
+        try:
+            date.fromisoformat(raw_expiry)
+        except ValueError as err:
+            raise ValueError("La scadenza deve essere nel formato YYYY-MM-DD.") from err
+        food["expiry_date"] = raw_expiry
+    else:
+        food["expiry_date"] = None
+        food["expiry_type"] = None
+
+    try:
+        units = int(changes.get("units_per_package", food.get("units_per_package", 1)) or 1)
+    except (TypeError, ValueError) as err:
+        raise ValueError("Le unità per confezione devono essere un numero.") from err
+    food["units_per_package"] = max(1, units)
+
+    food["unit_name"] = str(food.get("unit_name") or "unità").strip() or "unità"
+    food["package_type"] = str(food.get("package_type") or "confezione").strip() or "confezione"
+    food["category"] = str(food.get("category") or "Altro").strip() or "Altro"
+    food["needs_more_photo"] = False
+    food["inventory_ready"] = True
+    food["missing_fields"] = []
+    food["photo_request"] = None
+    food["photo_reason"] = None
+    food["photo_instruction"] = None
+    food["photo_target"] = None
+    food["photo_button_label"] = None
+    food["manual_completed"] = True
+    return food
 
 
 class FoodScannerDashboardScanView(HomeAssistantView):
@@ -83,7 +121,7 @@ class FoodScannerDashboardScanView(HomeAssistantView):
         action = str(data.get("action") or "scan").strip().lower()
         review_id = str(data.get("review_id") or "").strip() or None
 
-        if action == "skip_expiry":
+        if action in {"skip_expiry", "complete_manual"}:
             if not review_id:
                 return self.json_message("Verifica mancante", status_code=HTTPStatus.BAD_REQUEST)
             pending = get_review_queue(hass).get(review_id)
@@ -94,26 +132,32 @@ class FoodScannerDashboardScanView(HomeAssistantView):
             location = str(pending.get("location") or data.get("location") or "").strip().lower()
             if location not in VALID_LOCATIONS:
                 return self.json_message("Posizione non valida", status_code=HTTPStatus.BAD_REQUEST)
-            if not _can_skip_expiry(food):
-                return self.json_message(
-                    "Non posso ancora salvarlo: manca un dato essenziale del prodotto oltre alla scadenza.",
-                    status_code=HTTPStatus.BAD_REQUEST,
-                )
 
-            food["expiry_date"] = None
-            food["expiry_type"] = None
-            food["needs_more_photo"] = False
-            food["inventory_ready"] = True
-            food["missing_fields"] = [
-                value for value in (food.get("missing_fields") or [])
-                if str(value or "").strip().casefold() not in EXPIRY_FIELDS
-            ]
-            food["photo_request"] = None
-            food["photo_reason"] = None
-            food["photo_instruction"] = None
-            food["photo_target"] = None
-            food["photo_button_label"] = None
-            food["expiry_skipped"] = True
+            if action == "skip_expiry":
+                if not _can_skip_expiry(food):
+                    return self.json_message(
+                        "Non posso ancora salvarlo: manca un dato essenziale del prodotto oltre alla scadenza.",
+                        status_code=HTTPStatus.BAD_REQUEST,
+                    )
+                food["expiry_date"] = None
+                food["expiry_type"] = None
+                food["needs_more_photo"] = False
+                food["inventory_ready"] = True
+                food["missing_fields"] = [
+                    value for value in (food.get("missing_fields") or [])
+                    if str(value or "").strip().casefold() not in EXPIRY_FIELDS
+                ]
+                food["photo_request"] = None
+                food["photo_reason"] = None
+                food["photo_instruction"] = None
+                food["photo_target"] = None
+                food["photo_button_label"] = None
+                food["expiry_skipped"] = True
+            else:
+                try:
+                    food = _manual_food(food, data.get("changes") or {})
+                except ValueError as err:
+                    return self.json_message(str(err), status_code=HTTPStatus.BAD_REQUEST)
 
             item, created, added_units = await get_archive(hass).async_add(food, location)
             await get_review_queue(hass).async_remove(review_id)
@@ -124,8 +168,9 @@ class FoodScannerDashboardScanView(HomeAssistantView):
                 "archive_id": item.get("id"),
                 "new_product": created,
                 "added_units": added_units,
-                "expiry_date": None,
-                "expiry_skipped": True,
+                "expiry_date": item.get("expiry_date"),
+                "expiry_skipped": bool(food.get("expiry_skipped")),
+                "manual_completed": bool(food.get("manual_completed")),
             })
 
         location = str(data.get("location") or "").strip().lower()
