@@ -26,6 +26,11 @@ def _norm(v: Any) -> str:
     return " ".join(str(v or "").strip().casefold().split())
 
 
+def _clean_text(v: Any) -> str | None:
+    value = str(v or "").strip()
+    return value or None
+
+
 def _unit(v: Any) -> str:
     raw = str(v or "Pezzi").strip().casefold()
     for unit in STANDARD_UNITS:
@@ -67,6 +72,7 @@ class ConsumablesStore:
             item["stock_units"] = max(0, int(item.get("stock_units", 1) or 0))
             item.setdefault("category", "Casa")
             item["location"] = _location(item.get("location"))
+            item["purchase_store"] = _clean_text(item.get("purchase_store"))
             if int(item.get("min_stock", 0) or 0) == 1 and not item.get("threshold_customized"):
                 item["min_stock"] = 0
             else:
@@ -102,9 +108,10 @@ class ConsumablesStore:
     async def async_add(self, data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         name = str(data.get("product_name") or "").strip()
         if not name: raise ValueError("Il nome del consumabile è obbligatorio.")
-        barcode = str(data.get("barcode") or "").strip() or None
-        brand = str(data.get("brand") or "").strip() or None
-        quantity = str(data.get("quantity") or "").strip() or None
+        barcode = _clean_text(data.get("barcode"))
+        brand = _clean_text(data.get("brand"))
+        quantity = _clean_text(data.get("quantity"))
+        purchase_store = _clean_text(data.get("purchase_store"))
         category = str(data.get("category") or "Casa").strip() or "Casa"
         location = _location(data.get("location"))
         unit_name = _unit(data.get("unit_name"))
@@ -122,6 +129,8 @@ class ConsumablesStore:
                     existing["min_stock"] = min_stock
                     existing["threshold_customized"] = threshold_customized
                 if category: existing["category"] = category
+                if "purchase_store" in data:
+                    existing["purchase_store"] = purchase_store
                 result, created = dict(existing), False
             else:
                 item = {
@@ -136,6 +145,7 @@ class ConsumablesStore:
                     "stock_units": add_units,
                     "min_stock": min_stock,
                     "threshold_customized": threshold_customized,
+                    "purchase_store": purchase_store,
                     "added_at": now,
                     "updated_at": now,
                 }
@@ -170,8 +180,8 @@ class ConsumablesStore:
         async with self._lock:
             item=next((x for x in self._items if x.get("id")==product_id),None)
             if item is None:return None
-            for key in ("product_name","brand","quantity","barcode","category"):
-                if key in changes:item[key]=str(changes.get(key) or "").strip() or None
+            for key in ("product_name","brand","quantity","barcode","category","purchase_store"):
+                if key in changes:item[key]=_clean_text(changes.get(key))
             if not item.get("product_name"):raise ValueError("Il nome del consumabile non può essere vuoto.")
             if "unit_name" in changes:item["unit_name"]=_unit(changes.get("unit_name"))
             if "stock_units" in changes:
