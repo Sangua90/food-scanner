@@ -11,13 +11,16 @@ from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import CONF_API_KEY, CONF_MODEL, DEFAULT_MODEL, DOMAIN
+from .const import CONF_API_KEY, DOMAIN
 from .consumables import VALID_LOCATIONS, get_consumables
+from .gemini_compat import _candidate_models, _get_entry, _is_modern_gemini, _model_mode
 from .openproductsfacts import async_lookup_product
 
 _LOGGER = logging.getLogger(__name__)
 SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
+RUNTIME_KEY = f"{DOMAIN}_runtime"
+
 PROMPT = """Analizza questa foto di un consumabile domestico NON alimentare.
 Esempi: carta igienica, fazzoletti, detersivo, capsule lavastoviglie, sacchetti, sapone, shampoo, spugne, prodotti pulizia.
 Restituisci esclusivamente JSON valido con: product_name, brand, quantity, barcode, category, unit_name, units_per_package, confidence.
@@ -28,12 +31,10 @@ Se il barcode EAN/UPC/GTIN è leggibile, riportalo esattamente; altrimenti usa n
 Non inventare barcode o quantità non leggibili. confidence è 0-100.
 """
 
-
-def _entry(hass):
-    entries = hass.data.get(DOMAIN, {})
-    if not entries:
-        raise HomeAssistantError("HomeStock non configurato.")
-    return next(iter(entries.values()))
+BARCODE_PROMPT = """Leggi il codice a barre EAN/UPC/GTIN visibile nella foto.
+Restituisci esclusivamente JSON valido nel formato {"barcode": "numero"}.
+Se non è leggibile con sicurezza restituisci {"barcode": null}. Non inventare cifre.
+"""
 
 
 def _decode_image(data: dict) -> tuple[bytes, str]:
@@ -49,18 +50,16 @@ def _decode_image(data: dict) -> tuple[bytes, str]:
     return image_bytes, mime_type
 
 
-async def _gemini_json(hass, image_bytes: bytes, mime_type: str, prompt: str) -> dict:
-    entry = _entry(hass)
-    api_key = entry.data.get(CONF_API_KEY)
-    if not api_key:
-        raise HomeAssistantError("API key Gemini mancante.")
-    model = entry.options.get(CONF_MODEL, entry.data.get(CONF_MODEL, DEFAULT_MODEL))
+async def _call_model_json(hass, api_key: str, model: str, image_bytes: bytes, mime_type: str, prompt: str) -> dict:
+    generation_config = {"responseMimeType": "application/json"}
+    if not _is_modern_gemini(model):
+        generation_config["temperature"] = 0
     payload = {
         "contents": [{"parts": [
             {"inline_data": {"mime_type": mime_type, "data": base64.b64encode(image_bytes).decode("ascii")}},
             {"text": prompt},
         ]}],
-        "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
+        "generationConfig": generation_config,
     }
     session = async_get_clientsession(hass)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -69,27 +68,48 @@ async def _gemini_json(hass, image_bytes: bytes, mime_type: str, prompt: str) ->
             url,
             headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
             json=payload,
-            timeout=aiohttp.ClientTimeout(total=60),
+            timeout=aiohttp.ClientTimeout(total=75),
         ) as response:
             body = await response.text()
             if response.status >= 400:
-                raise HomeAssistantError(f"Gemini API {response.status}: {body[:400]}")
+                raise HomeAssistantError(f"Gemini API {response.status} ({model}): {body[:500]}")
     except aiohttp.ClientError as err:
-        raise HomeAssistantError(f"Errore di connessione a Gemini: {err}") from err
+        raise HomeAssistantError(f"Errore di connessione a Gemini ({model}): {err}") from err
 
     try:
         raw = json.loads(body)
         text = raw["candidates"][0]["content"]["parts"][0]["text"]
         data = json.loads(text)
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as err:
-        raise HomeAssistantError(f"Risposta Gemini non valida: {err}") from err
+        raise HomeAssistantError(f"Risposta Gemini non valida ({model}): {err}") from err
     if not isinstance(data, dict):
-        raise HomeAssistantError("Risposta Gemini non valida.")
+        raise HomeAssistantError(f"Risposta Gemini non valida ({model}).")
     return data
 
 
-async def _analyze(hass, image_bytes: bytes, mime_type: str) -> dict:
-    data = await _gemini_json(hass, image_bytes, mime_type, PROMPT)
+async def _gemini_json(hass, image_bytes: bytes, mime_type: str, prompt: str) -> tuple[dict, str]:
+    entry = _get_entry(hass)
+    api_key = entry.data.get(CONF_API_KEY)
+    if not api_key:
+        raise HomeAssistantError("API key Gemini mancante.")
+
+    candidates = await _candidate_models(hass, entry, api_key)
+    errors = []
+    for model in candidates:
+        try:
+            data = await _call_model_json(hass, api_key, model, image_bytes, mime_type, prompt)
+            hass.data.setdefault(RUNTIME_KEY, {})["gemini_last_good_model"] = model
+            return data, model
+        except HomeAssistantError as err:
+            errors.append(str(err))
+            if _model_mode(entry) != "auto":
+                raise
+
+    raise HomeAssistantError("Nessun modello Gemini compatibile per i consumabili. " + " | ".join(errors[-3:]))
+
+
+async def _analyze(hass, image_bytes: bytes, mime_type: str) -> tuple[dict, str]:
+    data, model = await _gemini_json(hass, image_bytes, mime_type, PROMPT)
     if not data.get("product_name"):
         raise HomeAssistantError("Consumabile non identificato correttamente.")
     try:
@@ -115,7 +135,7 @@ async def _analyze(hass, image_bytes: bytes, mime_type: str) -> dict:
             data["barcode_source"] = "Open Products Facts"
     else:
         data["barcode"] = None
-    return data
+    return data, model
 
 
 class FoodScannerConsumablesView(HomeAssistantView):
@@ -144,6 +164,15 @@ class FoodScannerConsumablesView(HomeAssistantView):
                 product = await async_lookup_product(hass, barcode)
                 return self.json({"success": True, "found": product is not None, "product": product, "barcode": barcode})
 
+            if action == "scan_barcode":
+                image_bytes, mime_type = _decode_image(data)
+                result, model = await _gemini_json(hass, image_bytes, mime_type, BARCODE_PROMPT)
+                barcode = "".join(ch for ch in str(result.get("barcode") or "") if ch.isdigit())
+                if len(barcode) < 8 or len(barcode) > 14:
+                    return self.json({"success": True, "barcode_read": False, "model": model})
+                product = await async_lookup_product(hass, barcode)
+                return self.json({"success": True, "barcode_read": True, "barcode": barcode, "found": product is not None, "product": product, "model": model})
+
             if action == "add_manual":
                 item, created = await store.async_add(data.get("changes") or {})
                 return self.json({"success": True, "item": item, "new_product": created})
@@ -169,13 +198,13 @@ class FoodScannerConsumablesView(HomeAssistantView):
                 if location not in VALID_LOCATIONS:
                     return self.json_message("Posizione consumabile non valida", status_code=HTTPStatus.BAD_REQUEST)
                 image_bytes, mime_type = _decode_image(data)
-                detected = await _analyze(hass, image_bytes, mime_type)
+                detected, model = await _analyze(hass, image_bytes, mime_type)
                 detected["stock_units"] = detected.get("units_per_package", 1)
                 detected["location"] = location
                 if action == "scan_preview":
-                    return self.json({"success": True, "detected": detected, "source": "gemini"})
+                    return self.json({"success": True, "detected": detected, "source": "gemini", "model": model})
                 item, created = await store.async_add(detected)
-                return self.json({"success": True, "item": item, "detected": detected, "new_product": created, "source": "gemini"})
+                return self.json({"success": True, "item": item, "detected": detected, "new_product": created, "source": "gemini", "model": model})
 
         except (ValueError, HomeAssistantError) as err:
             _LOGGER.warning("HomeStock consumables action %s failed: %s", action, err)
