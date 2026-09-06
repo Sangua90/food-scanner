@@ -23,7 +23,6 @@ from .nutrition_store import install_nutrition_persistence
 from .product_family import install_product_family
 from .review import get_review_queue
 from .scan_api import FoodScannerDashboardScanView
-from .scan_payload_compat import install_scan_payload_compat
 from .service import async_setup_services
 from .units import async_install_standard_units
 from .zero_stock_compat import install_zero_stock_compat
@@ -31,7 +30,7 @@ from .zero_stock_compat import install_zero_stock_compat
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
 PANEL_STATIC_URL = "/food_scanner_static"
-PANEL_VERSION = "1.6.20"
+PANEL_VERSION = "1.6.21"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
@@ -46,7 +45,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     install_nutrition_persistence()
     install_zero_stock_compat()
     install_product_family()
-    install_scan_payload_compat()
 
     archive = get_archive(hass)
     if not runtime.get("archive_loaded"):
