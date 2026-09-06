@@ -14,7 +14,7 @@ STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.consumables"
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 STANDARD_UNITS = ("Pezzi", "Bottiglie", "Lattine", "Vasetti", "Confezioni")
-VALID_LOCATIONS = ("magazzino", "bagno", "cucina", "lavanderia")
+VALID_LOCATIONS = ("magazzino", "bagno", "cucina", "lavanderia", "dispensa", "stalla")
 DEFAULT_LOW_STOCK = 2
 
 
@@ -67,9 +67,6 @@ class ConsumablesStore:
             item["stock_units"] = max(0, int(item.get("stock_units", 1) or 0))
             item.setdefault("category", "Casa")
             item["location"] = _location(item.get("location"))
-            # Older HomeStock builds silently assigned min_stock=1. Since the
-            # threshold was not user-facing, normalize that legacy default to
-            # 0 = automatic threshold (currently 2).
             if int(item.get("min_stock", 0) or 0) == 1 and not item.get("threshold_customized"):
                 item["min_stock"] = 0
             else:
