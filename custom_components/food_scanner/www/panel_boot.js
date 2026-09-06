@@ -1,8 +1,8 @@
-import "/food_scanner_static/panel_v185.js?v=1.6.40";
+import "/food_scanner_static/panel_v186.js?v=1.6.41";
 
 const Panel = customElements.get("food-scanner-panel");
 if (Panel) {
-  Panel.prototype.__homestock_frontend_build = "1.6.40";
+  Panel.prototype.__homestock_frontend_build = "1.6.41";
   Panel.prototype._download = async function(format) {
     try {
       const data = await this._hass.callApi(
