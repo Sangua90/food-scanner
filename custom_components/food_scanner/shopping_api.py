@@ -30,6 +30,7 @@ class HomeStockShoppingView(HomeAssistantView):
                     data.get("name"),
                     kind=data.get("kind"),
                     source_key=data.get("source_key"),
+                    purchase_store=data.get("purchase_store"),
                 )
                 return self.json({"success": True, "item": item, "items": store.items()})
             if action == "toggle":
