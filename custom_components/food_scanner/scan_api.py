@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from http import HTTPStatus
 
 from homeassistant.components.http import KEY_HASS
@@ -22,10 +23,17 @@ VALID_LOCATIONS = {"frigo", "freezer", "dispensa"}
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 EXPIRY_FIELDS = {"expiry_date", "expiry", "scadenza", "tmc"}
 MIN_SKIP_CONFIDENCE = 65
+MULTIPACK_RE = re.compile(r"\b\d+\s*[x×]\s*\d+", re.IGNORECASE)
 
 
 def _can_skip_expiry(food: dict) -> bool:
-    if not food.get("product_name"):
+    """Allow saving without expiry when the product itself is reliable enough.
+
+    Brand/barcode/category are useful metadata but must not block a skip. We only
+    stop when the actual product identity is missing, confidence is too low, or
+    a multipack quantity is still unresolved.
+    """
+    if not str(food.get("product_name") or "").strip():
         return False
     try:
         if int(food.get("confidence") or 0) < MIN_SKIP_CONFIDENCE:
@@ -33,17 +41,29 @@ def _can_skip_expiry(food: dict) -> bool:
     except (TypeError, ValueError):
         return False
 
+    quantity = str(food.get("quantity") or "")
+    try:
+        units = int(food.get("units_per_package") or 1)
+    except (TypeError, ValueError):
+        units = 1
+    if MULTIPACK_RE.search(quantity) and units <= 1:
+        return False
+
     missing = {
         str(value or "").strip().casefold()
         for value in (food.get("missing_fields") or [])
         if str(value or "").strip()
     }
-    non_expiry_missing = {value for value in missing if value not in EXPIRY_FIELDS}
-    if non_expiry_missing:
+    essential_missing = {
+        "product_name", "name", "nome", "units_per_package", "quantity", "quantita", "quantità"
+    }
+    if missing & essential_missing:
         return False
 
+    # The button is exposed only for expiry review, but keep the backend tolerant
+    # of older pending records where photo_target was not stored consistently.
     target = str(food.get("photo_target") or "").strip().casefold()
-    return target == "expiry" or bool(missing & EXPIRY_FIELDS)
+    return target == "expiry" or not food.get("expiry_date") or bool(missing & EXPIRY_FIELDS)
 
 
 class FoodScannerDashboardScanView(HomeAssistantView):
@@ -76,7 +96,7 @@ class FoodScannerDashboardScanView(HomeAssistantView):
                 return self.json_message("Posizione non valida", status_code=HTTPStatus.BAD_REQUEST)
             if not _can_skip_expiry(food):
                 return self.json_message(
-                    "Non posso saltare la verifica: oltre alla scadenza manca un altro dato essenziale.",
+                    "Non posso ancora salvarlo: manca un dato essenziale del prodotto oltre alla scadenza.",
                     status_code=HTTPStatus.BAD_REQUEST,
                 )
 
