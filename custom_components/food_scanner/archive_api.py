@@ -13,8 +13,10 @@ from homeassistant.exceptions import HomeAssistantError
 from .archive import get_archive
 from .const import (
     CONF_EXPIRY_NOTIFY, CONF_EXPIRY_NOTIFY_DAYS, CONF_EXPIRY_NOTIFY_SERVICE,
-    CONF_MODEL, CONF_NOTIFY, DEFAULT_EXPIRY_NOTIFY, DEFAULT_EXPIRY_NOTIFY_DAYS,
-    DEFAULT_EXPIRY_NOTIFY_SERVICE, DEFAULT_MODEL, DEFAULT_NOTIFY, DOMAIN,
+    CONF_FOOD_LOW_STOCK_THRESHOLD, CONF_MODEL, CONF_NOTIFY,
+    DEFAULT_EXPIRY_NOTIFY, DEFAULT_EXPIRY_NOTIFY_DAYS,
+    DEFAULT_EXPIRY_NOTIFY_SERVICE, DEFAULT_FOOD_LOW_STOCK_THRESHOLD,
+    DEFAULT_MODEL, DEFAULT_NOTIFY, DOMAIN,
 )
 from .history import get_history
 from .openfoodfacts import async_lookup_barcode
@@ -38,6 +40,9 @@ def _settings(entry) -> dict[str, Any]:
         "expiry_notify": entry.options.get(CONF_EXPIRY_NOTIFY, DEFAULT_EXPIRY_NOTIFY),
         "expiry_notify_days": entry.options.get(CONF_EXPIRY_NOTIFY_DAYS, DEFAULT_EXPIRY_NOTIFY_DAYS),
         "expiry_notify_service": entry.options.get(CONF_EXPIRY_NOTIFY_SERVICE, DEFAULT_EXPIRY_NOTIFY_SERVICE),
+        "food_low_stock_threshold": entry.options.get(
+            CONF_FOOD_LOW_STOCK_THRESHOLD, DEFAULT_FOOD_LOW_STOCK_THRESHOLD
+        ),
     }
 
 
@@ -143,6 +148,14 @@ class FoodScannerArchiveView(HomeAssistantView):
                 current[CONF_EXPIRY_NOTIFY_DAYS] = days
             if "expiry_notify_service" in data:
                 current[CONF_EXPIRY_NOTIFY_SERVICE] = str(data.get("expiry_notify_service") or "").strip()
+            if "food_low_stock_threshold" in data:
+                try:
+                    threshold = int(data.get("food_low_stock_threshold"))
+                except (TypeError, ValueError):
+                    return self.json_message("Soglia scorte basse non valida", status_code=HTTPStatus.BAD_REQUEST)
+                if threshold < 0 or threshold > 999:
+                    return self.json_message("La soglia scorte basse deve essere tra 0 e 999", status_code=HTTPStatus.BAD_REQUEST)
+                current[CONF_FOOD_LOW_STOCK_THRESHOLD] = threshold
             if "model" in data:
                 model = str(data.get("model") or "").strip()
                 if not model:
