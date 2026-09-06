@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
+from .product_family import derive_generic_name
 
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.consumables"
@@ -67,21 +68,25 @@ class ConsumablesStore:
             self._items = [dict(x) for x in data.get("items", []) if isinstance(x, dict)]
             self._history = [dict(x) for x in data.get("history", []) if isinstance(x, dict)][-5000:]
         cleaned = []
+        changed = False
         for item in self._items:
             item["unit_name"] = _unit(item.get("unit_name"))
             item["stock_units"] = max(0, int(item.get("stock_units", 1) or 0))
             item.setdefault("category", "Casa")
             item["location"] = _location(item.get("location"))
             item["purchase_store"] = _clean_text(item.get("purchase_store"))
+            if not _clean_text(item.get("generic_name")):
+                item["generic_name"] = derive_generic_name(item.get("product_name"), item.get("brand"), item.get("category"))
+                changed = True
             if int(item.get("min_stock", 0) or 0) == 1 and not item.get("threshold_customized"):
                 item["min_stock"] = 0
             else:
                 item["min_stock"] = max(0, int(item.get("min_stock", 0) or 0))
             item["threshold_customized"] = bool(item.get("min_stock", 0))
-            if item["stock_units"] > 0:
-                cleaned.append(item)
+            cleaned.append(item)
         self._items = cleaned
-        await self._async_save()
+        if changed or isinstance(data, dict):
+            await self._async_save()
 
     async def _async_save(self) -> None:
         await self.store.async_save({"items": self._items, "history": self._history[-5000:]})
@@ -99,10 +104,10 @@ class ConsumablesStore:
 
     def summary(self) -> dict[str, Any]:
         return {
-            "products": len(self._items),
+            "products": sum(1 for x in self._items if int(x.get("stock_units", 0) or 0) > 0),
             "units": sum(max(0, int(x.get("stock_units", 0) or 0)) for x in self._items),
             "low_stock": sum(1 for x in self._items if int(x.get("stock_units", 0) or 0) <= _effective_min_stock(x)),
-            **{loc: sum(1 for x in self._items if x.get("location") == loc) for loc in VALID_LOCATIONS},
+            **{loc: sum(1 for x in self._items if x.get("location") == loc and int(x.get("stock_units", 0) or 0) > 0) for loc in VALID_LOCATIONS},
         }
 
     async def async_add(self, data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -113,6 +118,7 @@ class ConsumablesStore:
         quantity = _clean_text(data.get("quantity"))
         purchase_store = _clean_text(data.get("purchase_store"))
         category = str(data.get("category") or "Casa").strip() or "Casa"
+        generic_name = _clean_text(data.get("generic_name")) or derive_generic_name(name, brand, category)
         location = _location(data.get("location"))
         unit_name = _unit(data.get("unit_name"))
         add_units = max(1, int(data.get("stock_units", data.get("units_per_package", 1)) or 1))
@@ -124,6 +130,7 @@ class ConsumablesStore:
             if existing:
                 existing["stock_units"] = int(existing.get("stock_units", 0) or 0) + add_units
                 existing["unit_name"] = unit_name
+                existing["generic_name"] = generic_name
                 existing["updated_at"] = now
                 if "min_stock" in data:
                     existing["min_stock"] = min_stock
@@ -136,6 +143,7 @@ class ConsumablesStore:
                 item = {
                     "id": uuid.uuid4().hex,
                     "product_name": name,
+                    "generic_name": generic_name,
                     "brand": brand,
                     "quantity": quantity,
                     "barcode": barcode,
@@ -146,6 +154,8 @@ class ConsumablesStore:
                     "min_stock": min_stock,
                     "threshold_customized": threshold_customized,
                     "purchase_store": purchase_store,
+                    "product_image_url": _clean_text(data.get("product_image_url")),
+                    "barcode_source": _clean_text(data.get("barcode_source")),
                     "added_at": now,
                     "updated_at": now,
                 }
@@ -167,12 +177,11 @@ class ConsumablesStore:
             now=_now()
             remaining=current-amount
             self._history.append({"type":"consumed","at":now,"product_id":item["id"],"product_name":item.get("product_name"),"amount":amount,"unit_name":item.get("unit_name")})
-            if remaining <= 0:
-                result={**item,"stock_units":0,"updated_at":now,"depleted":True}
-                self._items=[x for x in self._items if x.get("id")!=product_id]
-            else:
-                item["stock_units"]=remaining;item["updated_at"]=now;result=dict(item)
-                result["effective_min_stock"]=_effective_min_stock(item)
+            item["stock_units"]=remaining
+            item["updated_at"]=now
+            result=dict(item)
+            result["depleted"]=remaining == 0
+            result["effective_min_stock"]=_effective_min_stock(item)
             await self._async_save()
         return result
 
@@ -180,24 +189,23 @@ class ConsumablesStore:
         async with self._lock:
             item=next((x for x in self._items if x.get("id")==product_id),None)
             if item is None:return None
-            for key in ("product_name","brand","quantity","barcode","category","purchase_store"):
+            for key in ("product_name","generic_name","brand","quantity","barcode","category","purchase_store"):
                 if key in changes:item[key]=_clean_text(changes.get(key))
             if not item.get("product_name"):raise ValueError("Il nome del consumabile non può essere vuoto.")
+            if any(key in changes for key in ("product_name","brand","category")) and "generic_name" not in changes:
+                item["generic_name"] = derive_generic_name(item.get("product_name"), item.get("brand"), item.get("category"))
+            if not item.get("generic_name"):
+                item["generic_name"] = derive_generic_name(item.get("product_name"), item.get("brand"), item.get("category"))
             if "unit_name" in changes:item["unit_name"]=_unit(changes.get("unit_name"))
             if "stock_units" in changes:
-                value=max(0,int(changes.get("stock_units") or 0))
-                if value == 0:
-                    self._items=[x for x in self._items if x.get("id")!=product_id]
-                    await self._async_save()
-                    return {**item,"stock_units":0,"depleted":True}
-                item["stock_units"]=value
+                item["stock_units"]=max(0,int(changes.get("stock_units") or 0))
             if "min_stock" in changes:
                 item["min_stock"]=max(0,int(changes.get("min_stock") or 0))
                 item["threshold_customized"]=item["min_stock"]>0
             if "location" in changes:item["location"]=_location(changes.get("location"))
             item["updated_at"]=_now()
             await self._async_save()
-            result=dict(item);result["effective_min_stock"]=_effective_min_stock(item);return result
+            result=dict(item);result["depleted"]=int(item.get("stock_units",0) or 0)==0;result["effective_min_stock"]=_effective_min_stock(item);return result
 
     async def async_remove(self, product_id: str) -> bool:
         async with self._lock:
