@@ -7,6 +7,8 @@ from homeassistant.components.http import KEY_HASS
 from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.exceptions import HomeAssistantError
 
+from .archive import get_archive
+from .review import get_review_queue
 from .service import async_analyze_image_bytes
 
 SUPPORTED_MIME_TYPES = {
@@ -18,6 +20,30 @@ SUPPORTED_MIME_TYPES = {
 }
 VALID_LOCATIONS = {"frigo", "freezer", "dispensa"}
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
+EXPIRY_FIELDS = {"expiry_date", "expiry", "scadenza", "tmc"}
+MIN_SKIP_CONFIDENCE = 65
+
+
+def _can_skip_expiry(food: dict) -> bool:
+    if not food.get("product_name"):
+        return False
+    try:
+        if int(food.get("confidence") or 0) < MIN_SKIP_CONFIDENCE:
+            return False
+    except (TypeError, ValueError):
+        return False
+
+    missing = {
+        str(value or "").strip().casefold()
+        for value in (food.get("missing_fields") or [])
+        if str(value or "").strip()
+    }
+    non_expiry_missing = {value for value in missing if value not in EXPIRY_FIELDS}
+    if non_expiry_missing:
+        return False
+
+    target = str(food.get("photo_target") or "").strip().casefold()
+    return target == "expiry" or bool(missing & EXPIRY_FIELDS)
 
 
 class FoodScannerDashboardScanView(HomeAssistantView):
@@ -33,6 +59,54 @@ class FoodScannerDashboardScanView(HomeAssistantView):
             data = await request.json()
         except ValueError:
             return self.json_message("JSON non valido", status_code=HTTPStatus.BAD_REQUEST)
+
+        action = str(data.get("action") or "scan").strip().lower()
+        review_id = str(data.get("review_id") or "").strip() or None
+
+        if action == "skip_expiry":
+            if not review_id:
+                return self.json_message("Verifica mancante", status_code=HTTPStatus.BAD_REQUEST)
+            pending = get_review_queue(hass).get(review_id)
+            if pending is None:
+                return self.json_message("Verifica non trovata o già completata", status_code=HTTPStatus.NOT_FOUND)
+
+            food = dict(pending.get("food") or {})
+            location = str(pending.get("location") or data.get("location") or "").strip().lower()
+            if location not in VALID_LOCATIONS:
+                return self.json_message("Posizione non valida", status_code=HTTPStatus.BAD_REQUEST)
+            if not _can_skip_expiry(food):
+                return self.json_message(
+                    "Non posso saltare la verifica: oltre alla scadenza manca un altro dato essenziale.",
+                    status_code=HTTPStatus.BAD_REQUEST,
+                )
+
+            food["expiry_date"] = None
+            food["expiry_type"] = None
+            food["needs_more_photo"] = False
+            food["inventory_ready"] = True
+            food["missing_fields"] = [
+                value for value in (food.get("missing_fields") or [])
+                if str(value or "").strip().casefold() not in EXPIRY_FIELDS
+            ]
+            food["photo_request"] = None
+            food["photo_reason"] = None
+            food["photo_instruction"] = None
+            food["photo_target"] = None
+            food["photo_button_label"] = None
+            food["expiry_skipped"] = True
+
+            item, created, added_units = await get_archive(hass).async_add(food, location)
+            await get_review_queue(hass).async_remove(review_id)
+            return self.json({
+                "success": True,
+                "status": "archived",
+                "product_name": item.get("product_name") or food.get("product_name"),
+                "archive_id": item.get("id"),
+                "new_product": created,
+                "added_units": added_units,
+                "expiry_date": None,
+                "expiry_skipped": True,
+            })
 
         location = str(data.get("location") or "").strip().lower()
         if location not in VALID_LOCATIONS:
@@ -60,7 +134,6 @@ class FoodScannerDashboardScanView(HomeAssistantView):
                 status_code=HTTPStatus.BAD_REQUEST,
             )
 
-        review_id = str(data.get("review_id") or "").strip() or None
         try:
             result = await async_analyze_image_bytes(
                 hass,
