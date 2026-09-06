@@ -15,6 +15,7 @@ from .const import CONF_API_KEY, DOMAIN
 from .consumables import VALID_LOCATIONS, get_consumables
 from .gemini_compat import _candidate_models, _get_entry, _is_modern_gemini, _model_mode
 from .openproductsfacts import async_lookup_product
+from .product_family import derive_generic_name
 
 _LOGGER = logging.getLogger(__name__)
 SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}
@@ -22,8 +23,10 @@ MAX_IMAGE_BYTES = 12 * 1024 * 1024
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 
 PROMPT = """Analizza questa foto di un consumabile domestico NON alimentare.
-Esempi: carta igienica, fazzoletti, detersivo, capsule lavastoviglie, sacchetti, sapone, shampoo, spugne, prodotti pulizia.
-Restituisci esclusivamente JSON valido con: product_name, brand, quantity, barcode, category, unit_name, units_per_package, confidence.
+Esempi: carta igienica, rotoli carta cucina, fazzoletti, detersivo, capsule lavastoviglie, sacchetti, sapone, shampoo, spugne, prodotti pulizia.
+Restituisci esclusivamente JSON valido con: product_name, generic_name, brand, quantity, barcode, category, unit_name, units_per_package, confidence.
+generic_name deve essere la famiglia domestica breve del prodotto, indipendente da marca, formato e confezione, ma senza unire prodotti con uso diverso.
+Esempi: "Scottex Carta Igienica 12 rotoli" -> "Carta igienica"; "Regina Asciugoni 4 rotoli" -> "Rotoli carta cucina"; "Fairy 650 ml" -> "Detersivo piatti"; "Dove ricarica 500 ml" -> "Sapone mani"; "Finish Quantum 30 tabs" -> "Capsule lavastoviglie".
 category deve essere una tra: Carta e igiene, Pulizia casa, Bucato, Lavastoviglie, Bagno e persona, Sacchetti e monouso, Altro.
 unit_name deve essere ESATTAMENTE una tra: Pezzi, Bottiglie, Lattine, Vasetti, Confezioni.
 units_per_package è il numero di unità realmente consumabili nella confezione fotografata.
@@ -78,9 +81,10 @@ async def _call_model_json(hass, api_key: str, model: str, image_bytes: bytes, m
 
     try:
         raw = json.loads(body)
-        text = raw["candidates"][0]["content"]["parts"][0]["text"]
+        parts = raw["candidates"][0]["content"]["parts"]
+        text = next(p["text"] for p in parts if isinstance(p, dict) and isinstance(p.get("text"), str))
         data = json.loads(text)
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as err:
+    except (KeyError, IndexError, StopIteration, TypeError, json.JSONDecodeError) as err:
         raise HomeAssistantError(f"Risposta Gemini non valida ({model}): {err}") from err
     if not isinstance(data, dict):
         raise HomeAssistantError(f"Risposta Gemini non valida ({model}).")
@@ -135,6 +139,10 @@ async def _analyze(hass, image_bytes: bytes, mime_type: str) -> tuple[dict, str]
             data["barcode_source"] = "Open Products Facts"
     else:
         data["barcode"] = None
+
+    data["generic_name"] = str(data.get("generic_name") or "").strip() or derive_generic_name(
+        data.get("product_name"), data.get("brand"), data.get("category")
+    )
     return data, model
 
 
