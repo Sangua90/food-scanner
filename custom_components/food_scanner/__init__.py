@@ -34,7 +34,7 @@ from .zero_stock_compat import install_zero_stock_compat
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
 PANEL_STATIC_URL = "/food_scanner_static"
-PANEL_VERSION = "1.6.47"
+PANEL_VERSION = "1.6.48"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
