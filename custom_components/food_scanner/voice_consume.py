@@ -9,7 +9,8 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .archive import get_archive
-from .const import CONF_API_KEY, CONF_MODEL, DEFAULT_MODEL, DOMAIN
+from .const import CONF_API_KEY, DOMAIN
+from .gemini_compat import RUNTIME_KEY, _candidate_models, _get_entry as _compat_entry, _is_modern_gemini, _model_mode
 
 
 SYSTEM_PROMPT = """Sei il parser vocale di HomeStock.
@@ -64,22 +65,25 @@ def _compact_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _gemini_parse(hass: HomeAssistant, text: str, inventory: list[dict[str, Any]]) -> dict[str, Any]:
-    entry = _entry(hass)
-    api_key = entry.data.get(CONF_API_KEY)
-    if not api_key:
-        raise HomeAssistantError("API key Gemini mancante.")
-    model = entry.options.get(CONF_MODEL, entry.data.get(CONF_MODEL, DEFAULT_MODEL))
-    prompt = (
-        SYSTEM_PROMPT
-        + "\n\nFRASE DETTATA:\n"
-        + text
-        + "\n\nINVENTARIO DISPONIBILE:\n"
-        + json.dumps(inventory, ensure_ascii=False, separators=(",", ":"))
-    )
+def _extract_json_text(body: str, model: str) -> dict[str, Any]:
+    try:
+        raw = json.loads(body)
+        answer = raw["candidates"][0]["content"]["parts"][0]["text"]
+        parsed = json.loads(answer)
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as err:
+        raise HomeAssistantError(f"Gemini non ha restituito un'analisi vocale valida ({model}).") from err
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("requests"), list):
+        raise HomeAssistantError(f"Analisi vocale non valida ({model}).")
+    return parsed
+
+
+async def _call_voice_model(hass: HomeAssistant, api_key: str, model: str, prompt: str) -> dict[str, Any]:
+    generation_config: dict[str, Any] = {"responseMimeType": "application/json"}
+    if not _is_modern_gemini(model):
+        generation_config["temperature"] = 0
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json"},
+        "generationConfig": generation_config,
     }
     session = async_get_clientsession(hass)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -92,19 +96,39 @@ async def _gemini_parse(hass: HomeAssistant, text: str, inventory: list[dict[str
         ) as response:
             body = await response.text()
             if response.status >= 400:
-                raise HomeAssistantError(f"Gemini API {response.status}: {body[:400]}")
+                raise HomeAssistantError(f"Gemini API {response.status} ({model}): {body[:500]}")
     except aiohttp.ClientError as err:
-        raise HomeAssistantError(f"Errore di connessione a Gemini: {err}") from err
+        raise HomeAssistantError(f"Errore di connessione a Gemini ({model}): {err}") from err
+    return _extract_json_text(body, model)
 
-    try:
-        raw = json.loads(body)
-        answer = raw["candidates"][0]["content"]["parts"][0]["text"]
-        parsed = json.loads(answer)
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as err:
-        raise HomeAssistantError("Gemini non ha restituito un'analisi valida.") from err
-    if not isinstance(parsed, dict) or not isinstance(parsed.get("requests"), list):
-        raise HomeAssistantError("Analisi vocale non valida.")
-    return parsed
+
+async def _gemini_parse(hass: HomeAssistant, text: str, inventory: list[dict[str, Any]]) -> dict[str, Any]:
+    entry = _compat_entry(hass)
+    api_key = entry.data.get(CONF_API_KEY)
+    if not api_key:
+        raise HomeAssistantError("API key Gemini mancante.")
+    prompt = (
+        SYSTEM_PROMPT
+        + "\n\nFRASE DETTATA:\n"
+        + text
+        + "\n\nINVENTARIO DISPONIBILE:\n"
+        + json.dumps(inventory, ensure_ascii=False, separators=(",", ":"))
+    )
+
+    candidates = await _candidate_models(hass, entry, api_key)
+    errors: list[str] = []
+    for model in candidates:
+        try:
+            parsed = await _call_voice_model(hass, api_key, model, prompt)
+            hass.data.setdefault(RUNTIME_KEY, {})["gemini_last_good_model"] = model
+            return parsed
+        except HomeAssistantError as err:
+            errors.append(str(err))
+            if _model_mode(entry) != "auto":
+                raise
+
+    detail = " | ".join(errors[-3:])
+    raise HomeAssistantError(f"Nessun modello Gemini compatibile per la funzione vocale. {detail}")
 
 
 def _safe_amount(value: Any) -> int:
@@ -138,7 +162,10 @@ async def async_voice_consume_preview(hass: HomeAssistant, text: str) -> dict[st
         consume_all = bool(request.get("consume_all"))
         requested = _safe_amount(request.get("amount", 1))
         matched_id = str(request.get("matched_id") or "").strip()
-        confidence = max(0, min(100, _safe_amount(request.get("confidence", 0)))) if request.get("confidence") is not None else 0
+        try:
+            confidence = max(0, min(100, int(request.get("confidence") or 0)))
+        except (TypeError, ValueError):
+            confidence = 0
         matched = by_id.get(matched_id)
 
         ambiguous_ids = []
