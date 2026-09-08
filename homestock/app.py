@@ -73,9 +73,9 @@ def _is_modern_gemini(model: str) -> bool:
 
 async def _candidate_models(session: aiohttp.ClientSession, api_key: str, preferred: str | None, requested: list[str] | None = None) -> list[str]:
     if requested:
-        clean=[]
+        clean: list[str] = []
         for model in requested:
-            value=str(model or "").strip()
+            value = str(model or "").strip()
             if value and value not in clean:
                 clean.append(value)
         if clean:
@@ -153,6 +153,36 @@ async def _gemini_json_model(session: aiohttp.ClientSession, api_key: str, model
     return parsed
 
 
+async def _run_gemini(data: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, list[str], int]:
+    api_key = str(data.get("api_key") or "").strip()
+    prompt = str(data.get("prompt") or "").strip()
+    if not api_key or not prompt:
+        return None, None, ["API key o prompt mancante"], 400
+    media = None
+    mime = None
+    if data.get("media_data"):
+        try:
+            media, mime = _decode_media(data.get("media_data") or "", data.get("mime_type") or "")
+        except ValueError as err:
+            return None, None, [str(err)], 400
+    preferred = str(data.get("preferred_model") or "").strip() or None
+    requested = data.get("models") if isinstance(data.get("models"), list) else None
+    errors: list[str] = []
+    async with aiohttp.ClientSession() as session:
+        models = await _candidate_models(session, api_key, preferred, requested)
+        for model in models:
+            try:
+                parsed = await _gemini_json_model(session, api_key, model, prompt, media, mime)
+                STATE["last_ai_request"] = _now()
+                STATE["last_good_model"] = model
+                STATE["last_ai_kind"] = "media" if media is not None else "text"
+                _save_state(STATE)
+                return parsed, model, errors, 200
+            except (aiohttp.ClientError, TimeoutError, RuntimeError, KeyError, IndexError, StopIteration, TypeError, json.JSONDecodeError) as err:
+                errors.append(str(err))
+    return None, None, errors[-3:], 502
+
+
 async def health(_: web.Request) -> web.Response:
     return web.json_response({"ok": True, "name": ENGINE_NAME, "version": VERSION, "started_at": STATE.get("last_start")})
 
@@ -179,36 +209,10 @@ async def gemini_json(request: web.Request) -> web.Response:
         data = await request.json()
     except ValueError:
         return web.json_response({"message": "JSON non valido"}, status=400)
-    api_key = str(data.get("api_key") or "").strip()
-    prompt = str(data.get("prompt") or "").strip()
-    if not api_key:
-        return web.json_response({"message": "API key Gemini mancante"}, status=400)
-    if not prompt:
-        return web.json_response({"message": "Prompt mancante"}, status=400)
-    media = None
-    mime = None
-    if data.get("media_data"):
-        try:
-            media, mime = _decode_media(data.get("media_data") or "", data.get("mime_type") or "")
-        except ValueError as err:
-            return web.json_response({"message": str(err)}, status=400)
-    preferred = str(data.get("preferred_model") or "").strip() or None
-    requested = data.get("models") if isinstance(data.get("models"), list) else None
-    errors: list[str] = []
-    async with aiohttp.ClientSession() as session:
-        models = await _candidate_models(session, api_key, preferred, requested)
-        for model in models:
-            try:
-                parsed = await _gemini_json_model(session, api_key, model, prompt, media, mime)
-                STATE["last_ai_request"] = _now()
-                STATE["last_good_model"] = model
-                STATE["last_ai_kind"] = "media" if media is not None else "text"
-                _save_state(STATE)
-                return web.json_response({"success": True, "data": parsed, "model": model, "engine": VERSION})
-            except (aiohttp.ClientError, TimeoutError, RuntimeError, KeyError, IndexError, StopIteration, TypeError, json.JSONDecodeError) as err:
-                errors.append(str(err))
-    LOGGER.warning("Generic Gemini request failed: %s", " | ".join(errors[-3:]))
-    return web.json_response({"message": "Nessun modello Gemini compatibile ha completato l'analisi", "detail": errors[-3:]}, status=502)
+    parsed, model, errors, status = await _run_gemini(data)
+    if status >= 400:
+        return web.json_response({"message": "Analisi HomeStock Engine non riuscita", "detail": errors}, status=status)
+    return web.json_response({"success": True, "data": parsed, "model": model, "engine": VERSION})
 
 
 async def transcribe(request: web.Request) -> web.Response:
@@ -216,22 +220,23 @@ async def transcribe(request: web.Request) -> web.Response:
         data = await request.json()
     except ValueError:
         return web.json_response({"message": "JSON non valido"}, status=400)
-    data = dict(data)
-    data["prompt"] = TRANSCRIBE_PROMPT
-    data["media_data"] = data.pop("audio_data", "")
-    fake = request.clone()
-    fake._read_bytes = json.dumps(data).encode()
-    result = await gemini_json(fake)
-    if result.status >= 400:
-        return result
-    payload = json.loads(result.text)
-    parsed = payload.get("data") or {}
-    text = str(parsed.get("text") or "").strip()
+    payload = {
+        "api_key": data.get("api_key"),
+        "prompt": TRANSCRIBE_PROMPT,
+        "media_data": data.get("audio_data"),
+        "mime_type": data.get("mime_type"),
+        "preferred_model": data.get("preferred_model"),
+        "models": data.get("models"),
+    }
+    parsed, model, errors, status = await _run_gemini(payload)
+    if status >= 400:
+        return web.json_response({"message": "Trascrizione HomeStock Engine non riuscita", "detail": errors}, status=status)
+    text = str((parsed or {}).get("text") or "").strip()
     if not text:
         return web.json_response({"message": "Non ho riconosciuto parole nella registrazione"}, status=502)
     STATE["last_audio_transcription"] = _now()
     _save_state(STATE)
-    return web.json_response({"success": True, "text": text, "model": payload.get("model"), "engine": VERSION})
+    return web.json_response({"success": True, "text": text, "model": model, "engine": VERSION})
 
 
 async def diagnostics(_: web.Request) -> web.Response:
