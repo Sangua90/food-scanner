@@ -23,15 +23,16 @@ class HomeStockVoiceConsumeView(HomeAssistantView):
             return self.json_message("JSON non valido", status_code=HTTPStatus.BAD_REQUEST)
 
         action = str(data.get("action") or "preview").strip().lower()
+        kind = str(data.get("kind") or "food").strip().lower()
         try:
             if action == "preview":
-                result = await async_voice_consume_preview(hass, str(data.get("text") or ""))
+                result = await async_voice_consume_preview(hass, str(data.get("text") or ""), kind)
                 return self.json(result)
             if action == "apply":
                 operations = data.get("operations")
                 if not isinstance(operations, list):
                     return self.json_message("Operazioni mancanti", status_code=HTTPStatus.BAD_REQUEST)
-                result = await async_voice_consume_apply(hass, operations)
+                result = await async_voice_consume_apply(hass, operations, kind)
                 return self.json(result)
         except HomeAssistantError as err:
             return self.json_message(str(err), status_code=HTTPStatus.BAD_REQUEST)
