@@ -6,8 +6,6 @@ url: https://github.com/Sangua90/food-scanner
 arch:
   - amd64
   - aarch64
-  - armv7
-  - i386
 startup: application
 boot: auto
 init: false
