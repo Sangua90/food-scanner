@@ -11,6 +11,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .archive import get_archive
 from .consumables import get_consumables
 from .const import CONF_API_KEY
+from .engine_client import async_engine_gemini_json
 from .gemini_compat import RUNTIME_KEY, _candidate_models, _get_entry as _compat_entry, _is_modern_gemini, _model_mode
 
 
@@ -83,12 +84,7 @@ async def _call_voice_model(hass: HomeAssistant, api_key: str, model: str, promp
     session = async_get_clientsession(hass)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     try:
-        async with session.post(
-            url,
-            headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=45),
-        ) as response:
+        async with session.post(url, headers={"x-goog-api-key": api_key, "Content-Type": "application/json"}, json=payload, timeout=aiohttp.ClientTimeout(total=45)) as response:
             body = await response.text()
             if response.status >= 400:
                 raise HomeAssistantError(f"Gemini API {response.status} ({model}): {body[:500]}")
@@ -104,11 +100,26 @@ async def _gemini_parse(hass: HomeAssistant, text: str, inventory: list[dict[str
         raise HomeAssistantError("API key Gemini mancante.")
     prompt = _system_prompt(kind) + "\n\nFRASE DETTATA:\n" + text + "\n\nINVENTARIO DISPONIBILE:\n" + json.dumps(inventory, ensure_ascii=False, separators=(",", ":"))
     candidates = await _candidate_models(hass, entry, api_key)
+
+    engine_result = await async_engine_gemini_json(
+        hass,
+        api_key=api_key,
+        prompt=prompt,
+        models=candidates,
+    )
+    if engine_result is not None:
+        parsed, model = engine_result
+        if isinstance(parsed.get("requests"), list):
+            hass.data.setdefault(RUNTIME_KEY, {})["gemini_last_good_model"] = model
+            hass.data.setdefault(RUNTIME_KEY, {})["last_ai_backend"] = "engine"
+            return parsed
+
     errors: list[str] = []
     for model in candidates:
         try:
             parsed = await _call_voice_model(hass, api_key, model, prompt)
             hass.data.setdefault(RUNTIME_KEY, {})["gemini_last_good_model"] = model
+            hass.data.setdefault(RUNTIME_KEY, {})["last_ai_backend"] = "integration_fallback"
             return parsed
         except HomeAssistantError as err:
             errors.append(str(err))
@@ -142,12 +153,10 @@ async def async_voice_consume_preview(hass: HomeAssistant, text: str, kind: str 
         raise HomeAssistantError("Non ho ricevuto nulla da analizzare.")
     if len(phrase) > 1500:
         raise HomeAssistantError("Dettatura troppo lunga.")
-
     active = [_compact_item(x) for x in _inventory(hass, kind) if int(x.get("stock_units") or 0) > 0]
     if not active:
         label = "consumabili" if kind == "cons" else "alimenti"
         return {"success": True, "kind": kind, "phrase": phrase, "operations": [], "can_confirm": False, "message": f"Il magazzino {label} e vuoto."}
-
     parsed = await _gemini_parse(hass, phrase, active, kind)
     by_id = {x["id"]: x for x in active}
     operations: list[dict[str, Any]] = []
