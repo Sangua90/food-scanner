@@ -10,6 +10,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import CONF_API_KEY
+from .engine_client import async_engine_transcribe
 from .gemini_compat import RUNTIME_KEY, _candidate_models, _get_entry, _is_modern_gemini, _model_mode
 
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
@@ -102,13 +103,44 @@ async def async_transcribe_voice(
     if not api_key:
         raise HomeAssistantError("API key Gemini mancante.")
 
+    runtime = hass.data.setdefault(RUNTIME_KEY, {})
+    preferred = str(runtime.get("gemini_last_good_model") or "").strip() or None
+
+    # HomeStock 2.0 path: use the add-on first. The key is sent only for this
+    # local request and is not stored by the engine.
+    engine_result = await async_engine_transcribe(
+        hass,
+        api_key=api_key,
+        audio_data=audio_data,
+        mime_type=mime,
+        preferred_model=preferred,
+    )
+    if engine_result is not None:
+        model = str(engine_result.get("model") or "").strip()
+        if model:
+            runtime["gemini_last_good_model"] = model
+        return {
+            "success": True,
+            "text": str(engine_result.get("text") or "").strip(),
+            "model": model or None,
+            "processor": "homestock_engine",
+            "engine": engine_result.get("engine"),
+        }
+
+    # Safe fallback: if the add-on is unavailable or not yet updated, keep the
+    # existing in-integration Gemini transcription working exactly as before.
     candidates = await _candidate_models(hass, entry, api_key)
     errors: list[str] = []
     for model in candidates:
         try:
             text = await _call_transcribe_model(hass, api_key, model, audio_bytes, mime)
-            hass.data.setdefault(RUNTIME_KEY, {})["gemini_last_good_model"] = model
-            return {"success": True, "text": text, "model": model}
+            runtime["gemini_last_good_model"] = model
+            return {
+                "success": True,
+                "text": text,
+                "model": model,
+                "processor": "integration_fallback",
+            }
         except HomeAssistantError as err:
             errors.append(str(err))
             if _model_mode(entry) != "auto":
