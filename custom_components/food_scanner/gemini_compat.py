@@ -19,6 +19,7 @@ from .const import (
     DOMAIN,
     MODEL_MODE_AUTO,
 )
+from .engine_client import async_engine_gemini_json
 
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 MODEL_RE = re.compile(r"^models/(gemini-(\d+)\.(\d+)-flash(?:-lite)?)$")
@@ -44,8 +45,6 @@ def _is_modern_gemini(model: str) -> bool:
 
 
 def _model_rank(model: str, major: int, minor: int) -> tuple[int, int, int]:
-    # Prefer the newest normal Flash first, then Flash-Lite as an independent
-    # high-volume fallback with its own quota characteristics.
     lite = 0 if model.endswith("-flash-lite") else 1
     return (lite, major, minor)
 
@@ -54,36 +53,27 @@ async def _list_flash_models(hass: HomeAssistant, api_key: str) -> list[str]:
     session = async_get_clientsession(hass)
     url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000"
     try:
-        async with session.get(
-            url,
-            headers={"x-goog-api-key": api_key},
-            timeout=aiohttp.ClientTimeout(total=20),
-        ) as response:
+        async with session.get(url, headers={"x-goog-api-key": api_key}, timeout=aiohttp.ClientTimeout(total=20)) as response:
             body = await response.text()
             if response.status >= 400:
                 raise HomeAssistantError(f"Gemini models API {response.status}: {body[:500]}")
     except aiohttp.ClientError as err:
         raise HomeAssistantError(f"Errore di connessione alla lista modelli Gemini: {err}") from err
-
     try:
         payload = json.loads(body)
     except json.JSONDecodeError as err:
         raise HomeAssistantError("Risposta lista modelli Gemini non valida.") from err
-
     ranked: list[tuple[tuple[int, int, int], str]] = []
     for item in payload.get("models", []):
         if not isinstance(item, dict):
             continue
-        methods = item.get("supportedGenerationMethods") or []
-        if "generateContent" not in methods:
+        if "generateContent" not in (item.get("supportedGenerationMethods") or []):
             continue
-        name = str(item.get("name") or "")
-        match = MODEL_RE.match(name)
+        match = MODEL_RE.match(str(item.get("name") or ""))
         if not match:
             continue
         model, major, minor = match.groups()
         ranked.append((_model_rank(model, int(major), int(minor)), model))
-
     ranked.sort(reverse=True)
     return [model for _, model in ranked]
 
@@ -92,28 +82,20 @@ async def _candidate_models(hass: HomeAssistant, entry, api_key: str) -> list[st
     manual = _manual_model(entry)
     if _model_mode(entry) != MODEL_MODE_AUTO:
         return [manual]
-
     runtime = hass.data.setdefault(RUNTIME_KEY, {})
     last_good = str(runtime.get("gemini_last_good_model") or "").strip()
-
     try:
         discovered = await _list_flash_models(hass, api_key)
     except HomeAssistantError:
         discovered = []
-
     candidates: list[str] = []
-
     if discovered:
-        # Trust the model list returned for this exact API key/project. This avoids
-        # retrying stale configured models that are no longer exposed to the user.
         if last_good in discovered:
             candidates.append(last_good)
         for model in discovered:
             if model not in candidates:
                 candidates.append(model)
         return candidates
-
-    # If model discovery itself fails, use conservative known fallbacks.
     for model in (last_good, DEFAULT_MODEL, "gemini-3.5-flash-lite", "gemini-3.5-flash", manual):
         if model and model not in candidates:
             candidates.append(model)
@@ -129,12 +111,10 @@ async def _call_model(
     previous_food: dict[str, Any] | None,
 ):
     from . import service
-
     encoded = base64.b64encode(image_bytes).decode("ascii")
     generation_config: dict[str, Any] = {"responseMimeType": "application/json"}
     if not _is_modern_gemini(model):
         generation_config["temperature"] = 0
-
     payload = {
         "contents": [{"parts": [
             {"inline_data": {"mime_type": mime_type, "data": encoded}},
@@ -142,32 +122,23 @@ async def _call_model(
         ]}],
         "generationConfig": generation_config,
     }
-
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     session = async_get_clientsession(hass)
     try:
-        async with session.post(
-            url,
-            headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=75),
-        ) as response:
+        async with session.post(url, headers={"x-goog-api-key": api_key, "Content-Type": "application/json"}, json=payload, timeout=aiohttp.ClientTimeout(total=75)) as response:
             body = await response.text()
             if response.status >= 400:
                 raise HomeAssistantError(f"Gemini API {response.status} ({model}): {body[:700]}")
     except aiohttp.ClientError as err:
         raise HomeAssistantError(f"Errore di connessione a Gemini ({model}): {err}") from err
-
     try:
         result = json.loads(body)
         text = result["candidates"][0]["content"]["parts"][0]["text"]
         food = json.loads(text)
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as err:
         raise HomeAssistantError(f"Risposta Gemini non valida ({model}): {err}") from err
-
     if not isinstance(food, dict):
         raise HomeAssistantError(f"Risposta Gemini non valida ({model}): oggetto prodotto mancante.")
-
     service._normalize_package_fields(food)
     return food, model
 
@@ -178,29 +149,45 @@ async def async_call_gemini_compat(
     mime_type: str,
     previous_food: dict | None = None,
 ):
+    from . import service
     entry = _get_entry(hass)
     api_key = entry.data.get(CONF_API_KEY)
     if not api_key:
         raise HomeAssistantError("API key Gemini mancante.")
-
     candidates = await _candidate_models(hass, entry, api_key)
+
+    engine_result = await async_engine_gemini_json(
+        hass,
+        api_key=api_key,
+        prompt=service._build_prompt(previous_food),
+        models=candidates,
+        media_bytes=image_bytes,
+        mime_type=mime_type,
+    )
+    if engine_result is not None:
+        food, used_model = engine_result
+        if isinstance(food, dict):
+            service._normalize_package_fields(food)
+            hass.data.setdefault(RUNTIME_KEY, {})["gemini_last_good_model"] = used_model
+            hass.data.setdefault(RUNTIME_KEY, {})["last_ai_backend"] = "engine"
+            return food, used_model
+
     errors: list[str] = []
     for model in candidates:
         try:
             food, used_model = await _call_model(hass, api_key, model, image_bytes, mime_type, previous_food)
             hass.data.setdefault(RUNTIME_KEY, {})["gemini_last_good_model"] = used_model
+            hass.data.setdefault(RUNTIME_KEY, {})["last_ai_backend"] = "integration_fallback"
             return food, used_model
         except HomeAssistantError as err:
             errors.append(str(err))
             if _model_mode(entry) != MODEL_MODE_AUTO:
                 raise
-
     detail = " | ".join(errors[-4:])
     raise HomeAssistantError(f"Nessun modello Gemini compatibile ha completato l'analisi. {detail}")
 
 
 def install_gemini_compat() -> None:
     from . import informha_api, service
-
     service._call_gemini = async_call_gemini_compat
     informha_api._call_gemini = async_call_gemini_compat
