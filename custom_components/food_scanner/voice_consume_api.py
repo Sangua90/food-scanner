@@ -8,6 +8,7 @@ from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.exceptions import HomeAssistantError
 
 from .voice_consume import async_voice_consume_apply, async_voice_consume_preview
+from .voice_transcribe import async_transcribe_voice
 
 
 class HomeStockVoiceConsumeView(HomeAssistantView):
@@ -25,6 +26,13 @@ class HomeStockVoiceConsumeView(HomeAssistantView):
         action = str(data.get("action") or "preview").strip().lower()
         kind = str(data.get("kind") or "food").strip().lower()
         try:
+            if action == "transcribe":
+                result = await async_transcribe_voice(
+                    hass,
+                    str(data.get("audio_data") or ""),
+                    str(data.get("mime_type") or ""),
+                )
+                return self.json(result)
             if action == "preview":
                 result = await async_voice_consume_preview(hass, str(data.get("text") or ""), kind)
                 return self.json(result)
