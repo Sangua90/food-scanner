@@ -1,5 +1,5 @@
 name: HomeStock
-version: "2.0.0-alpha.1"
+version: "2.0.0-alpha.2"
 slug: homestock
 description: Motore HomeStock per scansioni, voce, AI e diagnostica
 url: https://github.com/Sangua90/food-scanner
