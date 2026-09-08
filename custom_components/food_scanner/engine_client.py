@@ -68,19 +68,9 @@ async def async_find_engine(hass: HomeAssistant) -> dict[str, Any] | None:
 async def async_engine_health(hass: HomeAssistant) -> dict[str, Any]:
     addon = await async_find_engine(hass)
     if addon is None:
-        return {
-            "available": False,
-            "installed": False,
-            "healthy": False,
-            "message": "HomeStock Engine non installato",
-        }
+        return {"available": False, "installed": False, "healthy": False, "message": "HomeStock Engine non installato"}
 
-    result = {
-        "available": False,
-        "installed": True,
-        "healthy": False,
-        "addon": addon,
-    }
+    result = {"available": False, "installed": True, "healthy": False, "addon": addon}
     if str(addon.get("state") or "").lower() not in {"started", "running"}:
         result["message"] = "HomeStock Engine installato ma non avviato"
         return result
@@ -97,3 +87,53 @@ async def async_engine_health(hass: HomeAssistant) -> dict[str, Any]:
     except (aiohttp.ClientError, TimeoutError, ValueError) as err:
         result["message"] = f"Engine non raggiungibile: {err}"
     return result
+
+
+async def async_engine_transcribe(
+    hass: HomeAssistant,
+    *,
+    api_key: str,
+    audio_data: str,
+    mime_type: str,
+    preferred_model: str | None = None,
+) -> dict[str, Any] | None:
+    health = await async_engine_health(hass)
+    if not health.get("healthy"):
+        return None
+    addon = health.get("addon") or {}
+    hostname = str(addon.get("hostname") or "").strip()
+    if not hostname:
+        return None
+
+    session = async_get_clientsession(hass)
+    try:
+        async with session.get(
+            f"http://{hostname}:{ENGINE_PORT}/v1/capabilities",
+            timeout=aiohttp.ClientTimeout(total=5),
+        ) as response:
+            caps = await response.json(content_type=None)
+            if response.status >= 400 or not bool((caps.get("capabilities") or {}).get("audio_transcription")):
+                return None
+    except (aiohttp.ClientError, TimeoutError, ValueError, AttributeError):
+        return None
+
+    payload = {
+        "api_key": api_key,
+        "audio_data": audio_data,
+        "mime_type": mime_type,
+        "preferred_model": preferred_model,
+    }
+    try:
+        async with session.post(
+            f"http://{hostname}:{ENGINE_PORT}/v1/transcribe",
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=75),
+        ) as response:
+            body = await response.json(content_type=None)
+            if response.status >= 400:
+                return None
+            if isinstance(body, dict) and body.get("success") and str(body.get("text") or "").strip():
+                return body
+    except (aiohttp.ClientError, TimeoutError, ValueError):
+        return None
+    return None
