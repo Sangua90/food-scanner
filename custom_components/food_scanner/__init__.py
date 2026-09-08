@@ -10,6 +10,7 @@ from .archive_api import FoodScannerArchiveView
 from .const import DOMAIN
 from .consumables import get_consumables
 from .consumables_api import FoodScannerConsumablesView
+from .engine_api import HomeStockEngineView
 from .expiry import ExpiryNotifier
 from .export_api import FoodScannerExportDataView, FoodScannerExportView
 from .gemini_compat import install_gemini_compat
@@ -34,7 +35,7 @@ from .zero_stock_compat import install_zero_stock_compat
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
 PANEL_STATIC_URL = "/food_scanner_static"
-PANEL_VERSION = "1.6.52"
+PANEL_VERSION = "1.6.53"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
@@ -81,6 +82,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ("consumables_view_registered", FoodScannerConsumablesView),
         ("shopping_view_registered", HomeStockShoppingView),
         ("voice_consume_view_registered", HomeStockVoiceConsumeView),
+        ("engine_view_registered", HomeStockEngineView),
         ("informha_catalog_view_registered", HomeStockInFormhaCatalogView),
         ("informha_barcode_view_registered", HomeStockInFormhaBarcodeView),
         ("informha_scan_view_registered", HomeStockInFormhaScanView),
