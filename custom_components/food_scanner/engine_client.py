@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 from typing import Any
 
@@ -48,8 +49,7 @@ async def async_find_engine(hass: HomeAssistant) -> dict[str, Any] | None:
     except (aiohttp.ClientError, TimeoutError, ValueError):
         return None
 
-    candidates = _extract_addons(payload)
-    for addon in candidates:
+    for addon in _extract_addons(payload):
         slug = str(addon.get("slug") or "").strip()
         name = str(addon.get("name") or "").strip().casefold()
         if not slug:
@@ -69,16 +69,13 @@ async def async_engine_health(hass: HomeAssistant) -> dict[str, Any]:
     addon = await async_find_engine(hass)
     if addon is None:
         return {"available": False, "installed": False, "healthy": False, "message": "HomeStock Engine non installato"}
-
     result = {"available": False, "installed": True, "healthy": False, "addon": addon}
     if str(addon.get("state") or "").lower() not in {"started", "running"}:
         result["message"] = "HomeStock Engine installato ma non avviato"
         return result
-
     session = async_get_clientsession(hass)
-    url = f"http://{addon['hostname']}:{ENGINE_PORT}/health"
     try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+        async with session.get(f"http://{addon['hostname']}:{ENGINE_PORT}/health", timeout=aiohttp.ClientTimeout(total=5)) as response:
             body = await response.json(content_type=None)
             if response.status < 400 and isinstance(body, dict) and body.get("ok"):
                 result.update({"available": True, "healthy": True, "health": body})
@@ -89,6 +86,53 @@ async def async_engine_health(hass: HomeAssistant) -> dict[str, Any]:
     return result
 
 
+async def _healthy_hostname(hass: HomeAssistant) -> str | None:
+    health = await async_engine_health(hass)
+    if not health.get("healthy"):
+        return None
+    return str((health.get("addon") or {}).get("hostname") or "").strip() or None
+
+
+async def async_engine_gemini_json(
+    hass: HomeAssistant,
+    *,
+    api_key: str,
+    prompt: str,
+    models: list[str],
+    media_bytes: bytes | None = None,
+    mime_type: str | None = None,
+) -> tuple[dict[str, Any], str] | None:
+    hostname = await _healthy_hostname(hass)
+    if not hostname:
+        return None
+    payload: dict[str, Any] = {
+        "api_key": api_key,
+        "prompt": prompt,
+        "models": models,
+        "preferred_model": models[0] if models else None,
+    }
+    if media_bytes is not None:
+        payload["media_data"] = base64.b64encode(media_bytes).decode("ascii")
+        payload["mime_type"] = mime_type
+    session = async_get_clientsession(hass)
+    try:
+        async with session.post(
+            f"http://{hostname}:{ENGINE_PORT}/v1/gemini_json",
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=85),
+        ) as response:
+            body = await response.json(content_type=None)
+            if response.status >= 400:
+                return None
+    except (aiohttp.ClientError, TimeoutError, ValueError):
+        return None
+    data = body.get("data") if isinstance(body, dict) else None
+    model = str(body.get("model") or "") if isinstance(body, dict) else ""
+    if not isinstance(data, dict) or not model:
+        return None
+    return data, model
+
+
 async def async_engine_transcribe(
     hass: HomeAssistant,
     *,
@@ -97,26 +141,10 @@ async def async_engine_transcribe(
     mime_type: str,
     preferred_model: str | None = None,
 ) -> dict[str, Any] | None:
-    health = await async_engine_health(hass)
-    if not health.get("healthy"):
-        return None
-    addon = health.get("addon") or {}
-    hostname = str(addon.get("hostname") or "").strip()
+    hostname = await _healthy_hostname(hass)
     if not hostname:
         return None
-
     session = async_get_clientsession(hass)
-    try:
-        async with session.get(
-            f"http://{hostname}:{ENGINE_PORT}/v1/capabilities",
-            timeout=aiohttp.ClientTimeout(total=5),
-        ) as response:
-            caps = await response.json(content_type=None)
-            if response.status >= 400 or not bool((caps.get("capabilities") or {}).get("audio_transcription")):
-                return None
-    except (aiohttp.ClientError, TimeoutError, ValueError, AttributeError):
-        return None
-
     payload = {
         "api_key": api_key,
         "audio_data": audio_data,
