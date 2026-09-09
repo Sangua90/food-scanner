@@ -105,9 +105,18 @@ class ExpiryNotifier:
         # Un avviso per fascia oraria, per ogni lotto, durante tutta la finestra:
         # es. soglia 3 -> 3, 2, 1 giorni prima e giorno di scadenza,
         # sia alle 11:30 sia alle 18:30.
+        # I lotti con quantità 0 restano nello storico/archivio ma non devono
+        # generare notifiche di scadenza perché non sono più presenti in casa.
         today = dt_util.now().date().isoformat()
         candidates: list[tuple[dict[str, Any], str]] = []
         for item in get_archive(self.hass).expiring_within(days):
+            try:
+                stock = float(item.get("stock_units", 0) or 0)
+            except (TypeError, ValueError):
+                stock = 0
+            if stock <= 0:
+                continue
+
             remaining = int(item.get("days_until_expiry", 0))
             if remaining < 0 or remaining > days:
                 continue
