@@ -30,7 +30,10 @@ RUNTIME_KEY = f"{DOMAIN}_runtime"
 
 def _day_text(days: int) -> str:
     if days < 0:
-        return f"scaduto da {abs(days)} giorni"
+        expired_days = abs(days)
+        if expired_days == 1:
+            return "scaduto da 1 giorno"
+        return f"scaduto da {expired_days} giorni"
     if days == 0:
         return "scade oggi"
     if days == 1:
@@ -102,11 +105,9 @@ class ExpiryNotifier:
         except (TypeError, ValueError):
             days = DEFAULT_EXPIRY_NOTIFY_DAYS
 
-        # Un avviso per fascia oraria, per ogni lotto, durante tutta la finestra:
-        # es. soglia 3 -> 3, 2, 1 giorni prima e giorno di scadenza,
-        # sia alle 11:30 sia alle 18:30.
-        # I lotti con quantità 0 restano nello storico/archivio ma non devono
-        # generare notifiche di scadenza perché non sono più presenti in casa.
+        # Avvisa durante la finestra configurata prima della scadenza, il giorno
+        # di scadenza e ancora per i 2 giorni successivi. I lotti a quantità 0
+        # restano nello storico/archivio ma non generano notifiche.
         today = dt_util.now().date().isoformat()
         candidates: list[tuple[dict[str, Any], str]] = []
         for item in get_archive(self.hass).expiring_within(days):
@@ -118,7 +119,7 @@ class ExpiryNotifier:
                 continue
 
             remaining = int(item.get("days_until_expiry", 0))
-            if remaining < 0 or remaining > days:
+            if remaining < -2 or remaining > days:
                 continue
             marker = f"{item.get('id')}:{item.get('expiry_date')}:{today}:{slot}"
             if marker not in self.sent:
