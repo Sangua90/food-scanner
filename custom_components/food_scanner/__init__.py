@@ -35,7 +35,7 @@ from .zero_stock_compat import install_zero_stock_compat
 RUNTIME_KEY = f"{DOMAIN}_runtime"
 PANEL_URL_PATH = "food-scanner"
 PANEL_STATIC_URL = "/food_scanner_static"
-PANEL_VERSION = "2.0.8"
+PANEL_VERSION = "2.0.9"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
@@ -58,7 +58,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_install_standard_units(archive)
 
     review_queue = get_review_queue(hass)
-    if not runtime.get("review_queue_loaded"):
+    if not runtime.get("review_queue_loaded")
+        :
         await review_queue.async_load(); runtime["review_queue_loaded"] = True
 
     history = get_history(hass)
