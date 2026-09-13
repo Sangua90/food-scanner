@@ -101,8 +101,8 @@ if (Panel) {
     </section>`;
   };
 
-  // Before taking the consumable photo the storage-location selector is redundant:
-  // keep the current/default location internally, then ask for the final location in preview.
+  // Prima della foto dei consumabili non serve scegliere due volte la posizione:
+  // il valore corrente resta interno e la scelta finale viene fatta nel riepilogo riconosciuto.
   const previousConsDialog209 = Panel.prototype.consScanDialog;
   if (previousConsDialog209) {
     Panel.prototype.consScanDialog = function() {
@@ -118,6 +118,12 @@ if (Panel) {
       return html;
     };
   }
+
+  // Una voce non riconosciuta non deve bloccare i prodotti riconosciuti.
+  Panel.prototype.voiceCanConfirm = function() {
+    const ops = this._voice?.ops || [];
+    return ops.some(op => op?.status === 'matched' && op?.id && Number(op?.amount || 0) > 0);
+  };
 
   const previousRender209 = Panel.prototype.render;
   Panel.prototype.render = function() {
