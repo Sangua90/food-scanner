@@ -199,29 +199,71 @@ async def async_voice_consume_preview(hass: HomeAssistant, text: str, kind: str 
             "confidence": confidence,
             "options": [],
         })
-    can_confirm = bool(operations) and all(x.get("status") == "matched" for x in operations)
-    return {"success": True, "kind": kind, "phrase": phrase, "operations": operations, "can_confirm": can_confirm}
+
+    matched_count = sum(1 for x in operations if x.get("status") == "matched" and x.get("id"))
+    unresolved_count = len(operations) - matched_count
+    can_confirm = matched_count > 0
+    return {
+        "success": True,
+        "kind": kind,
+        "phrase": phrase,
+        "operations": operations,
+        "can_confirm": can_confirm,
+        "matched_count": matched_count,
+        "unresolved_count": unresolved_count,
+        "message": (
+            f"Puoi salvare {matched_count} prodotti riconosciuti; {unresolved_count} non verranno modificati."
+            if matched_count and unresolved_count else None
+        ),
+    }
 
 
 async def async_voice_consume_apply(hass: HomeAssistant, operations: list[dict[str, Any]], kind: str = "food") -> dict[str, Any]:
     kind = _normalize_kind(kind)
     if not isinstance(operations, list) or not operations:
         raise HomeAssistantError("Nessuna modifica da confermare.")
+
     store = get_consumables(hass) if kind == "cons" else get_archive(hass)
     current = {str(x.get("id")): x for x in store.items()}
     validated: list[tuple[str, int, dict[str, Any]]] = []
+    skipped: list[dict[str, Any]] = []
+
     for op in operations[:20]:
         if not isinstance(op, dict):
-            raise HomeAssistantError("Modifica non valida.")
+            skipped.append({"spoken_name": "Prodotto", "reason": "invalid"})
+            continue
+
+        spoken_name = str(op.get("spoken_name") or op.get("product_name") or "Prodotto").strip() or "Prodotto"
+        status = str(op.get("status") or "").strip().lower()
         product_id = str(op.get("id") or "").strip()
+
+        # Unresolved voice requests no longer block the valid ones.
+        if not product_id or status in {"not_found", "ambiguous", "insufficient"}:
+            skipped.append({"spoken_name": spoken_name, "status": status or "not_found", "reason": "not_applied"})
+            continue
+
         item = current.get(product_id)
         if item is None:
-            raise HomeAssistantError("Uno dei prodotti non e piu disponibile. Rianalizza la dettatura.")
+            skipped.append({"spoken_name": spoken_name, "status": "unavailable", "reason": "not_applied"})
+            continue
+
         available = int(item.get("stock_units") or 0)
         amount = available if bool(op.get("consume_all")) else _safe_amount(op.get("amount", 1))
         if amount < 1 or amount > available:
-            raise HomeAssistantError(f"Quantita non disponibile per {item.get('product_name') or 'prodotto'}: presenti {available}.")
+            skipped.append({
+                "spoken_name": spoken_name,
+                "product_name": item.get("product_name"),
+                "status": "insufficient",
+                "available": available,
+                "reason": "not_applied",
+            })
+            continue
+
         validated.append((product_id, amount, item))
+
+    if not validated:
+        raise HomeAssistantError("Nessun prodotto riconosciuto da salvare.")
+
     results = []
     for product_id, amount, item in validated:
         result = await store.async_consume(product_id, amount)
@@ -232,4 +274,12 @@ async def async_voice_consume_apply(hass: HomeAssistant, operations: list[dict[s
             "amount": amount,
             "remaining": int(result.get("stock_units") or 0) if result else 0,
         })
-    return {"success": True, "kind": kind, "results": results}
+
+    return {
+        "success": True,
+        "kind": kind,
+        "results": results,
+        "skipped": skipped,
+        "applied_count": len(results),
+        "skipped_count": len(skipped),
+    }
