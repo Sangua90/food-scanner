@@ -58,8 +58,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_install_standard_units(archive)
 
     review_queue = get_review_queue(hass)
-    if not runtime.get("review_queue_loaded")
-        :
+    if not runtime.get("review_queue_loaded"):
         await review_queue.async_load(); runtime["review_queue_loaded"] = True
 
     history = get_history(hass)
