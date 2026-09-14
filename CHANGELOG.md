@@ -1,5 +1,10 @@
 # HomeStock changelog
 
+## 2.0.12
+
+- Consumabili: il campo **Supermercato / negozio** è assente prima della foto e compare una sola volta dopo il riconoscimento.
+- Rimossa la decorazione legacy che reinseriva il campo nel popup dopo il render.
+
 ## 1.4.0
 
 - Alimenti: un solo pulsante **Quantità** con correzione diretta tramite `− / +`.
