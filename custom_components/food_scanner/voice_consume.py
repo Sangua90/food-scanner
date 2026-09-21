@@ -62,17 +62,19 @@ def _consume_all_from_segment(segment: str) -> bool:
 
 
 def _fast_local_parse(text: str, inventory: list[dict[str, Any]]) -> dict[str, Any] | None:
-    # Fast path for ordinary shopping/consumption phrases. It is deliberately
-    # conservative: if any segment is ambiguous we fall back to Gemini.
+    # Fast path: match every clearly recognizable segment locally. Unresolved
+    # segments are returned as not_found instead of forcing the whole request
+    # through a slow remote AI call.
     segments = [
         part.strip(" .;:-")
-        for part in re.split(r"\s*(?:,|;|\be\b|\bpoi\b)\s*", text, flags=re.IGNORECASE)
+        for part in re.split(r"\\s*(?:,|;|\\be\\b|\\bpoi\\b)\\s*", text, flags=re.IGNORECASE)
         if part.strip(" .;:-")
     ]
     if not segments:
         return None
 
     requests: list[dict[str, Any]] = []
+    matched_any = False
     for segment in segments[:20]:
         seg_tokens = _tokens_fast(segment)
         if not seg_tokens:
@@ -104,26 +106,34 @@ def _fast_local_parse(text: str, inventory: list[dict[str, Any]]) -> dict[str, A
             scored.append((score, item))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        if not scored:
-            return None
-        best_score, best = scored[0]
+        best_score, best = scored[0] if scored else (0.0, None)
         second_score = scored[1][0] if len(scored) > 1 else 0.0
+        clear = bool(best) and best_score >= 0.72 and (second_score == 0 or best_score - second_score >= 0.18)
 
-        # Only accept clear local matches. Everything else uses AI.
-        if best_score < 0.72 or (second_score > 0 and best_score - second_score < 0.18):
-            return None
+        if clear:
+            matched_any = True
+            requests.append({
+                "spoken_name": segment,
+                "amount": _amount_from_segment(segment),
+                "consume_all": _consume_all_from_segment(segment),
+                "matched_id": best.get("id"),
+                "confidence": min(99, max(80, int(best_score * 100))),
+                "ambiguous_ids": [],
+            })
+        else:
+            requests.append({
+                "spoken_name": segment,
+                "amount": _amount_from_segment(segment),
+                "consume_all": _consume_all_from_segment(segment),
+                "matched_id": None,
+                "confidence": 0,
+                "ambiguous_ids": [],
+            })
 
-        requests.append({
-            "spoken_name": segment,
-            "amount": _amount_from_segment(segment),
-            "consume_all": _consume_all_from_segment(segment),
-            "matched_id": best.get("id"),
-            "confidence": min(99, max(80, int(best_score * 100))),
-            "ambiguous_ids": [],
-        })
-
-    return {"requests": requests} if requests else None
-
+    # If at least one product is clear, return immediately and let the UI save
+    # the valid matches while showing the unresolved ones. Only fully unresolved
+    # phrases use Gemini.
+    return {"requests": requests} if requests and matched_any else None
 
 def _system_prompt(kind: str) -> str:
     noun = "consumabili" if kind == "cons" else "alimenti"
@@ -194,7 +204,7 @@ async def _call_voice_model(hass: HomeAssistant, api_key: str, model: str, promp
     session = async_get_clientsession(hass)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     try:
-        async with session.post(url, headers={"x-goog-api-key": api_key, "Content-Type": "application/json"}, json=payload, timeout=aiohttp.ClientTimeout(total=45)) as response:
+        async with session.post(url, headers={"x-goog-api-key": api_key, "Content-Type": "application/json"}, json=payload, timeout=aiohttp.ClientTimeout(total=12)) as response:
             body = await response.text()
             if response.status >= 400:
                 raise HomeAssistantError(f"Gemini API {response.status} ({model}): {body[:500]}")
