@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from typing import Any
 
 import aiohttp
@@ -13,6 +15,114 @@ from .consumables import get_consumables
 from .const import CONF_API_KEY
 from .engine_client import async_engine_gemini_json
 from .gemini_compat import RUNTIME_KEY, _candidate_models, _get_entry as _compat_entry, _is_modern_gemini, _model_mode
+
+
+_FAST_MODEL = "gemini-2.5-flash-lite"
+_NUMBER_WORDS = {
+    "un": 1, "uno": 1, "una": 1,
+    "due": 2, "tre": 3, "quattro": 4, "cinque": 5,
+    "sei": 6, "sette": 7, "otto": 8, "nove": 9, "dieci": 10,
+}
+_STOPWORDS = {
+    "ho", "hai", "abbiamo", "usato", "usata", "usati", "usate", "tolto", "tolta",
+    "tolti", "tolte", "mangiato", "mangiata", "mangiati", "mangiate", "aperto", "aperta",
+    "aperti", "aperte", "consumato", "consumata", "consumati", "consumate", "finito", "finita",
+    "finiti", "finite", "del", "della", "dei", "degli", "delle", "di", "da", "dal", "dallo",
+    "dalla", "dai", "dagli", "dalle", "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
+    "e", "poi", "anche", "tutto", "tutta", "tutti", "tutte", "confezione", "confezioni",
+    "pezzo", "pezzi", "vasetto", "vasetti", "bottiglia", "bottiglie", "lattina", "lattine",
+}
+
+
+def _norm_fast(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or "").casefold())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _tokens_fast(value: Any) -> set[str]:
+    return {x for x in _norm_fast(value).split() if len(x) > 1 and x not in _STOPWORDS}
+
+
+def _amount_from_segment(segment: str) -> int:
+    norm = _norm_fast(segment)
+    match = re.search(r"\b(\d{1,3})\b", norm)
+    if match:
+        return max(1, int(match.group(1)))
+    for word, number in _NUMBER_WORDS.items():
+        if re.search(rf"\b{word}\b", norm):
+            return number
+    return 1
+
+
+def _consume_all_from_segment(segment: str) -> bool:
+    norm = _norm_fast(segment)
+    return any(re.search(rf"\b{word}\b", norm) for word in ("finito", "finita", "finiti", "finite", "tutto", "tutta", "tutti", "tutte"))
+
+
+def _fast_local_parse(text: str, inventory: list[dict[str, Any]]) -> dict[str, Any] | None:
+    # Fast path for ordinary shopping/consumption phrases. It is deliberately
+    # conservative: if any segment is ambiguous we fall back to Gemini.
+    segments = [
+        part.strip(" .;:-")
+        for part in re.split(r"\s*(?:,|;|\be\b|\bpoi\b)\s*", text, flags=re.IGNORECASE)
+        if part.strip(" .;:-")
+    ]
+    if not segments:
+        return None
+
+    requests: list[dict[str, Any]] = []
+    for segment in segments[:20]:
+        seg_tokens = _tokens_fast(segment)
+        if not seg_tokens:
+            continue
+
+        scored: list[tuple[float, dict[str, Any]]] = []
+        seg_norm = _norm_fast(segment)
+        for item in inventory:
+            name = _norm_fast(item.get("product_name"))
+            generic = _norm_fast(item.get("generic_name"))
+            brand = _norm_fast(item.get("brand"))
+            fields = " ".join(x for x in (name, generic, brand) if x)
+            item_tokens = _tokens_fast(fields)
+            if not item_tokens:
+                continue
+            overlap = len(seg_tokens & item_tokens)
+            if overlap == 0:
+                continue
+            coverage = overlap / max(1, len(seg_tokens))
+            item_coverage = overlap / max(1, min(len(item_tokens), 4))
+            bonus = 0.0
+            if name and name in seg_norm:
+                bonus += 0.45
+            elif generic and generic in seg_norm:
+                bonus += 0.35
+            if brand and brand in seg_norm:
+                bonus += 0.25
+            score = coverage * 0.65 + item_coverage * 0.25 + bonus
+            scored.append((score, item))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        if not scored:
+            return None
+        best_score, best = scored[0]
+        second_score = scored[1][0] if len(scored) > 1 else 0.0
+
+        # Only accept clear local matches. Everything else uses AI.
+        if best_score < 0.72 or (second_score > 0 and best_score - second_score < 0.18):
+            return None
+
+        requests.append({
+            "spoken_name": segment,
+            "amount": _amount_from_segment(segment),
+            "consume_all": _consume_all_from_segment(segment),
+            "matched_id": best.get("id"),
+            "confidence": min(99, max(80, int(best_score * 100))),
+            "ambiguous_ids": [],
+        })
+
+    return {"requests": requests} if requests else None
 
 
 def _system_prompt(kind: str) -> str:
@@ -100,6 +210,9 @@ async def _gemini_parse(hass: HomeAssistant, text: str, inventory: list[dict[str
         raise HomeAssistantError("API key Gemini mancante.")
     prompt = _system_prompt(kind) + "\n\nFRASE DETTATA:\n" + text + "\n\nINVENTARIO DISPONIBILE:\n" + json.dumps(inventory, ensure_ascii=False, separators=(",", ":"))
     candidates = await _candidate_models(hass, entry, api_key)
+    # Prefer the lightest/fastest model for this tiny structured task, while
+    # retaining the normal candidate list as fallback if it is unavailable.
+    candidates = [_FAST_MODEL] + [m for m in candidates if m != _FAST_MODEL]
 
     engine_result = await async_engine_gemini_json(
         hass,
@@ -157,7 +270,11 @@ async def async_voice_consume_preview(hass: HomeAssistant, text: str, kind: str 
     if not active:
         label = "consumabili" if kind == "cons" else "alimenti"
         return {"success": True, "kind": kind, "phrase": phrase, "operations": [], "can_confirm": False, "message": f"Il magazzino {label} e vuoto."}
-    parsed = await _gemini_parse(hass, phrase, active, kind)
+    parsed = _fast_local_parse(phrase, active)
+    if parsed is not None:
+        hass.data.setdefault(RUNTIME_KEY, {})["last_ai_backend"] = "local_fast_match"
+    else:
+        parsed = await _gemini_parse(hass, phrase, active, kind)
     by_id = {x["id"]: x for x in active}
     operations: list[dict[str, Any]] = []
     for request in parsed.get("requests", [])[:20]:
