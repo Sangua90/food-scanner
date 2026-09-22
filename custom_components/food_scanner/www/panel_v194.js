@@ -1,10 +1,11 @@
-import './panel_v193.js?v=1.6.49-base';
+import './panel_v193.js?v=2.0.15';
 const P=customElements.get('food-scanner-panel');
 if(P){
   const prevVoiceHtml=P.prototype.voiceHtml;
   const prevVoiceDecorate=P.prototype.voiceDecorate;
 
   P.prototype.voiceOpen=function(kind){
+    this.voiceStopMedia1651?.();
     const resolved=kind || (this._mode==='cons'?'cons':'food');
     this._voice={status:'input',text:'',ops:[],kind:resolved};
     this.render();
@@ -38,11 +39,12 @@ if(P){
 
   P.prototype.voiceApply=async function(){
     const s=this._voice;
-    if(!s||!this.voiceCanConfirm())return;
+    if(!s||s.status!=='preview'||!this.voiceCanConfirm())return;
     s.status='saving';this.render();
     try{
-      const operations=s.ops.map(x=>({id:x.id,amount:x.amount,consume_all:!!x.consume_all}));
+      const operations=s.ops.filter(x=>x.status==='matched'&&x.id).map(x=>({id:x.id,amount:x.amount,status:x.status,consume_all:!!x.consume_all}));
       const out=await this._hass.callApi('POST','food_scanner/voice_consume',{action:'apply',kind:s.kind||'food',operations});
+      if(this._voice!==s)return;
       s.results=Array.isArray(out?.results)?out.results:[];
       s.status='success';
       try{await this.load();}catch(_){}

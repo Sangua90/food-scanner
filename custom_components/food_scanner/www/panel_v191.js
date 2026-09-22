@@ -1,4 +1,4 @@
-import './panel_v190.js?v=1.6.46-base';
+import './panel_v190.js?v=2.0.15';
 const P=customElements.get('food-scanner-panel');
 if(P){
   P.prototype.voiceOpen=function(){this._voice={status:'input',text:'',ops:[]};this.render();};

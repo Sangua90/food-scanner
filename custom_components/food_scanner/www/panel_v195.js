@@ -1,4 +1,4 @@
-import './panel_v194.js?v=1.6.51-base';
+import './panel_v194.js?v=2.0.15';
 
 const P=customElements.get('food-scanner-panel');
 if(P){
@@ -7,8 +7,12 @@ if(P){
   const prevVoiceClose=P.prototype.voiceClose;
 
   P.prototype.voiceStopMedia1651=function(){
+    clearTimeout(this._voicePermissionTimer);
+    clearTimeout(this._voiceRecordingTimer);
+    clearTimeout(this._voiceStopTimer);
     try{
       const rec=this._voiceRecorder1651;
+      if(rec) rec.onstop=rec.onerror=rec.ondataavailable=null;
       if(rec&&rec.state!=='inactive') rec.stop();
     }catch(_){ }
     try{
@@ -21,6 +25,18 @@ if(P){
   P.prototype.voiceClose=function(){
     this.voiceStopMedia1651();
     prevVoiceClose.call(this);
+  };
+
+  P.prototype.voiceRequest=async function(payload){
+    let timer;
+    try{
+      const out=await Promise.race([
+        this._hass.callApi('POST','food_scanner/voice_consume',payload),
+        new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('La richiesta non risponde. Controlla la connessione e usa il testo o la dettatura della tastiera.')),25000);}),
+      ]);
+      if(out?.success===false) throw new Error(out.message||'Operazione non riuscita.');
+      return out;
+    }finally{clearTimeout(timer);}
   };
 
   P.prototype.voiceAudioBase641651=async function(blob){
@@ -40,10 +56,10 @@ if(P){
     s.status='loading';
     this.render();
     try{
-      const out=await this._hass.callApi('POST','food_scanner/voice_consume',{
+      const out=await this.voiceRequest({
         action:'preview',kind:s.kind||'food',text:phrase
       });
-      if(!this._voice)return;
+      if(this._voice!==s)return;
       s.ops=Array.isArray(out?.operations)?out.operations:[];
       if(!s.ops.length&&out?.message){
         s.status='error';s.message=String(out.message);this.render();return;
@@ -51,7 +67,7 @@ if(P){
       s.status='preview';
       this.render();
     }catch(e){
-      if(!this._voice)return;
+      if(this._voice!==s)return;
       s.status='error';
       s.message=this.voiceErrorText?this.voiceErrorText(e):(e?.message||String(e));
       this.render();
@@ -79,18 +95,19 @@ if(P){
     this.render();
     try{
       const audioData=await this.voiceAudioBase641651(blob);
-      const out=await this._hass.callApi('POST','food_scanner/voice_consume',{
+      if(this._voice!==s)return;
+      const out=await this.voiceRequest({
         action:'transcribe',
         kind:s.kind||'food',
-        mime_type:String(mime||blob.type||'audio/mp4').split(';',1)[0],
+        mime_type:String(blob.type||mime||'').split(';',1)[0].trim().toLowerCase(),
         audio_data:audioData,
       });
-      if(!this._voice)return;
+      if(this._voice!==s)return;
       const text=String(out?.text||'').trim();
       if(!text)throw new Error('Non ho riconosciuto parole nella registrazione.');
       await this.voiceAnalyzeText1651(text);
     }catch(e){
-      if(!this._voice)return;
+      if(this._voice!==s)return;
       s.status='error';
       s.message=this.voiceErrorText?this.voiceErrorText(e):(e?.message||String(e));
       this.render();
@@ -99,20 +116,27 @@ if(P){
 
   P.prototype.voiceRecordStart1651=async function(kind){
     const resolved=kind||((this._mode==='cons')?'cons':'food');
+    const text=this.shadowRoot?.querySelector('#voiceText')?.value||this._voice?.text||'';
     this.voiceStopMedia1651();
-    this._voice={status:'requesting',text:'',ops:[],kind:resolved};
+    const s=this._voice={status:'requesting',text,ops:[],kind:resolved};
     this.render();
 
-    if(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined'){
-      this._voice.status='mic_error';
-      this._voice.message='La registrazione diretta non è disponibile in questa modalità. Puoi usare la dettatura iPhone.';
-      this.render();
+    const fail=message=>{
+      if(this._voice!==s)return;
+      this.voiceStopMedia1651();
+      s.status='mic_error';s.message=message;this.render();
+    };
+
+    if(!globalThis.isSecureContext||!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined'){
+      fail('La registrazione richiede HTTPS e un browser con accesso al microfono. Apri HomeStock in Safari/Chrome oppure usa la dettatura della tastiera.');
       return;
     }
 
     try{
+      this._voicePermissionTimer=setTimeout(()=>fail('Nessuna risposta al permesso microfono. Puoi riprovare oppure scrivere o dettare con la tastiera.'),15000);
       const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-      if(!this._voice){stream.getTracks().forEach(t=>t.stop());return;}
+      if(this._voice!==s||s.status!=='requesting'){stream.getTracks().forEach(t=>t.stop());return;}
+      clearTimeout(this._voicePermissionTimer);
       this._voiceStream1651=stream;
 
       const candidates=['audio/mp4','audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus'];
@@ -123,43 +147,55 @@ if(P){
       const recorder=mime?new MediaRecorder(stream,{mimeType:mime}):new MediaRecorder(stream);
       this._voiceRecorder1651=recorder;
       const chunks=[];
-      recorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};
+      let bytes=0;
+      recorder.ondataavailable=e=>{
+        if(e.data&&e.data.size){
+          bytes+=e.data.size;
+          if(bytes>10*1024*1024){fail('Registrazione troppo grande. Usa un messaggio più breve o la dettatura della tastiera.');return;}
+          chunks.push(e.data);
+        }
+      };
       recorder.onerror=()=>{
-        if(!this._voice)return;
-        this.voiceStopMedia1651();
-        this._voice.status='mic_error';
-        this._voice.message='Errore durante la registrazione. Puoi usare la dettatura iPhone.';
-        this.render();
+        fail('Errore durante la registrazione. Puoi usare la dettatura della tastiera.');
       };
       recorder.onstop=async()=>{
-        const actualMime=String(recorder.mimeType||mime||chunks[0]?.type||'audio/mp4');
+        clearTimeout(this._voiceRecordingTimer);
+        clearTimeout(this._voiceStopTimer);
+        const actualMime=String(recorder.mimeType||chunks[0]?.type||mime||'');
         try{stream.getTracks().forEach(t=>t.stop());}catch(_){ }
         this._voiceRecorder1651=null;
         this._voiceStream1651=null;
-        if(!this._voice)return;
+        if(this._voice!==s)return;
         const blob=new Blob(chunks,{type:actualMime});
         await this.voiceProcessAudio1651(blob,actualMime);
       };
-      this._voice.status='recording';
-      this.render();
       recorder.start(250);
+      s.status='recording';
+      this._voiceRecordingTimer=setTimeout(()=>this.voiceRecordStop1651(),45000);
+      this.render();
     }catch(e){
-      if(!this._voice)return;
+      if(this._voice!==s)return;
       const name=String(e?.name||'');
       let msg='Non riesco ad accedere al microfono.';
       if(name==='NotAllowedError'||name==='SecurityError') msg='Permesso microfono non concesso. Puoi abilitarlo oppure usare la dettatura iPhone.';
       else if(name==='NotFoundError') msg='Nessun microfono disponibile su questo dispositivo.';
-      this._voice.status='mic_error';
-      this._voice.message=msg;
-      this.render();
+      fail(msg);
     }
   };
 
   P.prototype.voiceRecordStop1651=function(){
     const rec=this._voiceRecorder1651;
     if(!rec||rec.state==='inactive')return;
+    const s=this._voice;
+    clearTimeout(this._voiceRecordingTimer);
+    this._voiceStopTimer=setTimeout(()=>{
+      if(this._voice!==s)return;
+      this.voiceStopMedia1651();
+      s.status='mic_error';s.message='La registrazione non si è conclusa. Usa la dettatura della tastiera.';this.render();
+    },5000);
     if(this._voice){this._voice.status='transcribing';this.render();}
     try{rec.stop();}catch(e){
+      this.voiceStopMedia1651();
       if(this._voice){this._voice.status='error';this._voice.message=e?.message||String(e);this.render();}
     }
   };

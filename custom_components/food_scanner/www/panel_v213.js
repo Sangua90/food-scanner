@@ -1,4 +1,4 @@
-import './panel_v211.js?v=2.0.12-base';
+import './panel_v211.js?v=2.0.15';
 
 const Panel = customElements.get('food-scanner-panel');
 
@@ -41,7 +41,7 @@ if (Panel) {
     if (!root) return;
 
     const version = root.querySelector('.hsVersion165 b');
-    if (version) version.textContent = 'v2.0.12';
+    if (version) version.textContent = 'v2.0.15';
 
     if (!this._consScan) return;
     const modal = root.querySelector('#cons1644X')?.closest('.modal')

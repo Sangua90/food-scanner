@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import unicodedata
@@ -18,6 +19,7 @@ from .gemini_compat import RUNTIME_KEY, _candidate_models, _get_entry as _compat
 
 
 _FAST_MODEL = "gemini-2.5-flash-lite"
+VOICE_AI_TIMEOUT = 12
 _NUMBER_WORDS = {
     "un": 1, "uno": 1, "una": 1,
     "due": 2, "tre": 3, "quattro": 4, "cinque": 5,
@@ -42,7 +44,7 @@ def _norm_fast(value: Any) -> str:
 
 
 def _tokens_fast(value: Any) -> set[str]:
-    return {x for x in _norm_fast(value).split() if len(x) > 1 and x not in _STOPWORDS}
+    return {x for x in _norm_fast(value).split() if len(x) > 1 and x not in _STOPWORDS and x not in _NUMBER_WORDS and not x.isdigit()}
 
 
 def _amount_from_segment(segment: str) -> int:
@@ -67,7 +69,7 @@ def _fast_local_parse(text: str, inventory: list[dict[str, Any]]) -> dict[str, A
     # through a slow remote AI call.
     segments = [
         part.strip(" .;:-")
-        for part in re.split(r"\\s*(?:,|;|\\be\\b|\\bpoi\\b)\\s*", text, flags=re.IGNORECASE)
+        for part in re.split(r"\s*(?:,|;|\be\b|\bpoi\b)\s*", text, flags=re.IGNORECASE)
         if part.strip(" .;:-")
     ]
     if not segments:
@@ -219,16 +221,18 @@ async def _gemini_parse(hass: HomeAssistant, text: str, inventory: list[dict[str
     if not api_key:
         raise HomeAssistantError("API key Gemini mancante.")
     prompt = _system_prompt(kind) + "\n\nFRASE DETTATA:\n" + text + "\n\nINVENTARIO DISPONIBILE:\n" + json.dumps(inventory, ensure_ascii=False, separators=(",", ":"))
-    candidates = await _candidate_models(hass, entry, api_key)
+    candidates = await _candidate_models(hass, entry, api_key, discovery_timeout=2)
     # Prefer the lightest/fastest model for this tiny structured task, while
     # retaining the normal candidate list as fallback if it is unavailable.
-    candidates = [_FAST_MODEL] + [m for m in candidates if m != _FAST_MODEL]
+    if _model_mode(entry) == "auto":
+        candidates = [_FAST_MODEL] + [m for m in candidates if m != _FAST_MODEL]
 
     engine_result = await async_engine_gemini_json(
         hass,
         api_key=api_key,
         prompt=prompt,
         models=candidates,
+        timeout=3,
     )
     if engine_result is not None:
         parsed, model = engine_result
@@ -284,7 +288,9 @@ async def async_voice_consume_preview(hass: HomeAssistant, text: str, kind: str 
     if parsed is not None:
         hass.data.setdefault(RUNTIME_KEY, {})["last_ai_backend"] = "local_fast_match"
     else:
-        parsed = await _gemini_parse(hass, phrase, active, kind)
+        # One budget for discovery, Engine and all direct model attempts.
+        async with asyncio.timeout(VOICE_AI_TIMEOUT):
+            parsed = await _gemini_parse(hass, phrase, active, kind)
     by_id = {x["id"]: x for x in active}
     operations: list[dict[str, Any]] = []
     for request in parsed.get("requests", [])[:20]:
@@ -352,6 +358,7 @@ async def async_voice_consume_apply(hass: HomeAssistant, operations: list[dict[s
 
     store = get_consumables(hass) if kind == "cons" else get_archive(hass)
     current = {str(x.get("id")): x for x in store.items()}
+    remaining = {key: int(item.get("stock_units") or 0) for key, item in current.items()}
     validated: list[tuple[str, int, dict[str, Any]]] = []
     skipped: list[dict[str, Any]] = []
 
@@ -374,7 +381,7 @@ async def async_voice_consume_apply(hass: HomeAssistant, operations: list[dict[s
             skipped.append({"spoken_name": spoken_name, "status": "unavailable", "reason": "not_applied"})
             continue
 
-        available = int(item.get("stock_units") or 0)
+        available = remaining[product_id]
         amount = available if bool(op.get("consume_all")) else _safe_amount(op.get("amount", 1))
         if amount < 1 or amount > available:
             skipped.append({
@@ -387,6 +394,7 @@ async def async_voice_consume_apply(hass: HomeAssistant, operations: list[dict[s
             continue
 
         validated.append((product_id, amount, item))
+        remaining[product_id] -= amount
 
     if not validated:
         raise HomeAssistantError("Nessun prodotto riconosciuto da salvare.")

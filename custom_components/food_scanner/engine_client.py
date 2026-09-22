@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 from typing import Any
@@ -101,36 +102,42 @@ async def async_engine_gemini_json(
     models: list[str],
     media_bytes: bytes | None = None,
     mime_type: str | None = None,
+    timeout: float = 85,
 ) -> tuple[dict[str, Any], str] | None:
-    hostname = await _healthy_hostname(hass)
-    if not hostname:
-        return None
-    payload: dict[str, Any] = {
-        "api_key": api_key,
-        "prompt": prompt,
-        "models": models,
-        "preferred_model": models[0] if models else None,
-    }
-    if media_bytes is not None:
-        payload["media_data"] = base64.b64encode(media_bytes).decode("ascii")
-        payload["mime_type"] = mime_type
-    session = async_get_clientsession(hass)
+    # Budget includes Supervisor discovery, health check and request.
     try:
-        async with session.post(
-            f"http://{hostname}:{ENGINE_PORT}/v1/gemini_json",
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=85),
-        ) as response:
-            body = await response.json(content_type=None)
-            if response.status >= 400:
+        async with asyncio.timeout(timeout):
+            hostname = await _healthy_hostname(hass)
+            if not hostname:
                 return None
-    except (aiohttp.ClientError, TimeoutError, ValueError):
+            payload: dict[str, Any] = {
+                "api_key": api_key,
+                "prompt": prompt,
+                "models": models,
+                "preferred_model": models[0] if models else None,
+            }
+            if media_bytes is not None:
+                payload["media_data"] = base64.b64encode(media_bytes).decode("ascii")
+                payload["mime_type"] = mime_type
+            session = async_get_clientsession(hass)
+            try:
+                async with session.post(
+                    f"http://{hostname}:{ENGINE_PORT}/v1/gemini_json",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=85),
+                ) as response:
+                    body = await response.json(content_type=None)
+                    if response.status >= 400:
+                        return None
+            except (aiohttp.ClientError, TimeoutError, ValueError):
+                return None
+            data = body.get("data") if isinstance(body, dict) else None
+            model = str(body.get("model") or "") if isinstance(body, dict) else ""
+            if not isinstance(data, dict) or not model:
+                return None
+            return data, model
+    except TimeoutError:
         return None
-    data = body.get("data") if isinstance(body, dict) else None
-    model = str(body.get("model") or "") if isinstance(body, dict) else ""
-    if not isinstance(data, dict) or not model:
-        return None
-    return data, model
 
 
 async def async_engine_transcribe(
@@ -140,28 +147,34 @@ async def async_engine_transcribe(
     audio_data: str,
     mime_type: str,
     preferred_model: str | None = None,
+    timeout: float = 75,
 ) -> dict[str, Any] | None:
-    hostname = await _healthy_hostname(hass)
-    if not hostname:
-        return None
-    session = async_get_clientsession(hass)
-    payload = {
-        "api_key": api_key,
-        "audio_data": audio_data,
-        "mime_type": mime_type,
-        "preferred_model": preferred_model,
-    }
+    # Budget includes Supervisor discovery, health check and request.
     try:
-        async with session.post(
-            f"http://{hostname}:{ENGINE_PORT}/v1/transcribe",
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=75),
-        ) as response:
-            body = await response.json(content_type=None)
-            if response.status >= 400:
+        async with asyncio.timeout(timeout):
+            hostname = await _healthy_hostname(hass)
+            if not hostname:
                 return None
-            if isinstance(body, dict) and body.get("success") and str(body.get("text") or "").strip():
-                return body
-    except (aiohttp.ClientError, TimeoutError, ValueError):
+            session = async_get_clientsession(hass)
+            payload = {
+                "api_key": api_key,
+                "audio_data": audio_data,
+                "mime_type": mime_type,
+                "preferred_model": preferred_model,
+            }
+            try:
+                async with session.post(
+                    f"http://{hostname}:{ENGINE_PORT}/v1/transcribe",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=75),
+                ) as response:
+                    body = await response.json(content_type=None)
+                    if response.status >= 400:
+                        return None
+                    if isinstance(body, dict) and body.get("success") and str(body.get("text") or "").strip():
+                        return body
+            except (aiohttp.ClientError, TimeoutError, ValueError):
+                return None
+            return None
+    except TimeoutError:
         return None
-    return None

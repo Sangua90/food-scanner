@@ -36,6 +36,8 @@ def decode_audio(audio_data: str, mime_type: str) -> tuple[bytes, str]:
     mime = str(mime_type or "").split(";", 1)[0].strip().lower()
     if mime not in SUPPORTED_AUDIO_TYPES:
         raise HomeAssistantError(f"Formato audio non supportato: {mime or 'sconosciuto'}.")
+    if len(audio_data) > 4 * ((MAX_AUDIO_BYTES + 2) // 3):
+        raise HomeAssistantError("Registrazione troppo lunga: massimo 10 MB.")
     try:
         raw = base64.b64decode(str(audio_data or ""), validate=True)
     except (ValueError, TypeError) as err:
@@ -114,6 +116,7 @@ async def async_transcribe_voice(
         audio_data=audio_data,
         mime_type=mime,
         preferred_model=preferred,
+        timeout=5,
     )
     if engine_result is not None:
         model = str(engine_result.get("model") or "").strip()
@@ -129,7 +132,7 @@ async def async_transcribe_voice(
 
     # Safe fallback: if the add-on is unavailable or not yet updated, keep the
     # existing in-integration Gemini transcription working exactly as before.
-    candidates = await _candidate_models(hass, entry, api_key)
+    candidates = await _candidate_models(hass, entry, api_key, discovery_timeout=2)
     errors: list[str] = []
     for model in candidates:
         try:
