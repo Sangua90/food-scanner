@@ -1,5 +1,12 @@
 # HomeStock changelog
 
+## 2.0.16
+
+- Verifica visiva e funzionale dell'intero pannello su desktop, tablet e iPhone, comprese le viste Alimenti, Consumabili, Liste, Impostazioni e aggiunta manuale.
+- Aggiunto uno stato di caricamento esplicito per evitare il falso messaggio di archivio vuoto mentre Home Assistant sta ancora recuperando le scorte.
+- Portati i principali controlli tattili, inclusi “Quantità”, chiusura finestre e regolazioni nelle impostazioni, a dimensioni più adatte all'uso su telefono.
+- Aggiornato il pannello attivo a `panel_v214` e mantenute le correzioni vocali e di timeout introdotte nella 2.0.15.
+
 ## 2.0.15
 
 - Consumo vocale: corretta la separazione locale di frasi con più prodotti e la gestione delle quantità nel matching; i risultati parziali non richiedono l'AI.

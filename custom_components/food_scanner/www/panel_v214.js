@@ -1,0 +1,131 @@
+import './panel_v211.js?v=2.0.16';
+
+const Panel = customElements.get('food-scanner-panel');
+
+if (Panel) {
+  const previousConsDialog212 = Panel.prototype.consScanDialog;
+  const previousLoad214 = Panel.prototype.load;
+  const previousConnected214 = Panel.prototype.connectedCallback;
+  const previousFood214 = Panel.prototype.renderFood;
+  const previousCons214 = Panel.prototype.renderCons;
+
+  Panel.prototype.connectedCallback = function() {
+    this._hsInitialLoading214 = true;
+    previousConnected214.call(this);
+  };
+
+  Panel.prototype.load = async function() {
+    this._hsInitialLoading214 = true;
+    this.render();
+    try {
+      return await previousLoad214.call(this);
+    } finally {
+      this._hsInitialLoading214 = false;
+      this.render();
+    }
+  };
+
+  const loadingView214 = () => `<section class="hsModePage hsLoading214" role="status" aria-live="polite">
+    <span class="hsLoadingSpinner214" aria-hidden="true"></span>
+    <b>Caricamento delle scorte…</b>
+    <small>Aggiorno alimenti e consumabili</small>
+  </section>`;
+  Panel.prototype.renderFood = function() {
+    if (this._hsInitialLoading214) return loadingView214();
+    if (this._hsListsPage175 && this.hsListsView175) return this.hsListsView175();
+    return previousFood214.call(this);
+  };
+  Panel.prototype.renderCons = function() {
+    if (this._hsInitialLoading214) return loadingView214();
+    if (this._hsListsPage175 && this.hsListsView175) return this.hsListsView175();
+    return previousCons214.call(this);
+  };
+
+  // Build the pre-recognition popup explicitly. Older frontend overrides decorate
+  // the rendered modal afterwards, so filtering the returned HTML is not enough.
+  Panel.prototype.consScanDialog = function() {
+    const s = this._consScan;
+    if (!s) return '';
+
+    if (s.status !== 'photo' && s.status !== 'fallback') {
+      return previousConsDialog212.call(this);
+    }
+
+    const failed = s.status === 'fallback';
+    return `<div class="overlay"><div class="modal scanModal foodScanModal cons1644Modal cons212PreScan">
+      <button class="close" id="cons1644X">×</button>
+      <div class="scanHead">
+        <div class="scanIcon">⌁</div>
+        <div>
+          <h2>Scansiona consumabile</h2>
+          <p>${failed ? this.esc(s.message || 'Riprova con una foto più chiara.') : 'Scatta una foto chiara della confezione. Posizione, quantità e negozio li scegli dopo il riconoscimento.'}</p>
+        </div>
+      </div>
+      <input id="cons1644File" type="file" accept="image/*,.heic,.heif" capture="environment" hidden>
+      <button id="cons1644Photo" class="scanPhotoButton">
+        <span class="cameraGlyph">◉</span>
+        <span><b>${failed ? 'Riprova foto' : 'Scatta foto'}</b><small>Apri la fotocamera</small></span>
+      </button>
+      ${failed ? `<div class="scanHint"><b>Riconoscimento non riuscito</b><span>${this.esc(s.message || 'Riprova con una foto più chiara.')}</span></div>` : ''}
+    </div></div>`;
+  };
+
+  const previousRender212 = Panel.prototype.render;
+  Panel.prototype.render = function() {
+    previousRender212.call(this);
+    const root = this.shadowRoot;
+    if (!root) return;
+
+    const version = root.querySelector('.hsVersion165 b');
+    if (version) version.textContent = 'v2.0.16';
+
+    if (!root.querySelector('#hsUsability214')) {
+      const style = document.createElement('style');
+      style.id = 'hsUsability214';
+      style.textContent = `
+        .hsLoading214{min-height:min(58vh,520px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;text-align:center;color:#eaf4ff}
+        .hsLoading214 b{font-size:16px}.hsLoading214 small{color:#8194a9!important;font-size:11px!important}
+        .hsLoadingSpinner214{width:32px;height:32px;border-radius:50%;border:3px solid rgba(105,183,255,.18);border-top-color:#4daeff;animation:hsSpin214 .8s linear infinite}
+        @keyframes hsSpin214{to{transform:rotate(360deg)}}
+        .neoFoodSide .hsQtyButton201,.hsConsSide166 .hsQtyButton201{height:44px!important;min-height:44px!important}
+        .modal>.close,.voiceMd>button:first-child{width:44px!important;height:44px!important;min-width:44px!important;min-height:44px!important}
+        .hsInlineSave165,.hsFamilyProduct202>button{min-height:44px!important;height:44px!important}
+        .hsMiniStep165{grid-template-columns:44px 42px 44px!important}.hsMiniStep165 button{width:44px!important;height:44px!important}
+        .hsSwitch165{min-width:48px!important;min-height:38px!important}
+        @media(max-width:760px){
+          .hsConsZoneChips180{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;overflow:visible!important;gap:8px!important}
+          .hsConsZoneChips180 button{min-width:0!important;width:100%!important}
+          .neoFoodSide .hsQtyButton201,.hsConsSide166 .hsQtyButton201{height:44px!important;min-height:44px!important;font-size:10px!important}
+          .hsLoading214{min-height:52vh;padding:36px 16px}
+        }
+        @media(prefers-reduced-motion:reduce){.hsLoadingSpinner214{animation:none}}
+      `;
+      root.appendChild(style);
+    }
+
+    if (!this._consScan) return;
+    const modal = root.querySelector('#cons1644X')?.closest('.modal')
+      || root.querySelector('#cons1644File')?.closest('.modal')
+      || root.querySelector('.cons1644Modal');
+    if (!modal) return;
+
+    // panel_v156 injects #consStoreScan after the dialog HTML has been rendered.
+    // Remove only that legacy decoration. The preview field #cons1644Store stays
+    // in place and remains wired by panel_v189's isolated consumable bind.
+    modal.querySelectorAll('#consStoreScan').forEach(input => {
+      const field = input.closest('.hsStoreField');
+      if (field) field.remove();
+      else input.remove();
+    });
+
+    // Defensive invariant: before recognition there must be no editable store
+    // control even if another cached override supplied the modern field early.
+    if (this._consScan.status !== 'preview') {
+      modal.querySelectorAll('#cons1644Store').forEach(input => {
+        const field = input.closest('.cons1644Field');
+        if (field) field.remove();
+        else input.remove();
+      });
+    }
+  };
+}

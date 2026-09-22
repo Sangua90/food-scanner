@@ -28,7 +28,7 @@ const root = path.resolve(__dirname, '../custom_components/food_scanner/www');
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
     await page.goto(`http://127.0.0.1:${server.address().port}`);
-    await page.waitForFunction(() => customElements.get('food-scanner-panel')?.prototype.__homestock_frontend_build === '2.0.15');
+    await page.waitForFunction(() => customElements.get('food-scanner-panel')?.prototype.__homestock_frontend_build === '2.0.16');
     await page.evaluate(() => {
       window.requests = [];
       window.nativeRecorder = window.MediaRecorder;
