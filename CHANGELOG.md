@@ -1,5 +1,10 @@
 # HomeStock changelog
 
+## 2.0.18
+
+- La X permanente ora chiude la schermata o torna alla vista Alimenti; non esce più da HomeStock.
+- Rimossa l'azione “Registra vocale”. Il consumo resta disponibile con testo e dettatura della tastiera del telefono.
+
 ## 2.0.17
 
 - Un timeout di consumo vocale o trascrizione ora restituisce un esito gestito dall'applicazione con messaggio e fallback testuale, senza risposta HTTP 408 che Home Assistant mostrava come errore generico.

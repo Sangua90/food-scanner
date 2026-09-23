@@ -1,8 +1,53 @@
-import './panel_v211.js?v=2.0.17';
+import './panel_v211.js?v=2.0.18';
 
 const Panel = customElements.get('food-scanner-panel');
 
 if (Panel) {
+  const previousVoiceHtml216 = Panel.prototype.voiceHtml;
+  const previousSmartClose216 = Panel.prototype.smartClose176;
+
+  // Direct microphone recording is intentionally not offered: browser and iPhone
+  // keyboards already provide dictation and it avoids another permission path.
+  Panel.prototype.voiceHtml = function() {
+    const state = this._voice;
+    if (!state || (state.status !== 'input' && state.status !== 'error')) {
+      return previousVoiceHtml216.call(this);
+    }
+    const esc = value => this.esc ? this.esc(value) : String(value ?? '');
+    const consumables = state.kind === 'cons';
+    const title = consumables ? 'Consuma consumabili' : 'Consuma alimenti';
+    const example = consumables
+      ? 'Due rotoli di carta cucina e un sapone mani Dove'
+      : 'Una pizza e due scatolette di tonno Migros';
+    return `<div class="voiceOv"><div class="voiceMd voiceInput216">
+      <button id="voiceX">×</button>
+      <h2>🎙 ${title}</h2>
+      <p>Scrivi oppure usa il microfono della tastiera del telefono.</p>
+      ${state.status === 'error' ? `<div class="voiceErr">${esc(state.message || 'Analisi non riuscita')}</div>` : ''}
+      <textarea id="voiceText" rows="4" placeholder="Scrivi o detta qui…">${esc(state.text || '')}</textarea>
+      <small>Esempio: “${esc(example)}”</small>
+      <button id="voiceGo" class="primary">Analizza</button>
+    </div></div>`;
+  };
+
+  Panel.prototype.smartClose176 = function() {
+    if (this._consScan) { this._consScan = null; this.render(); return true; }
+    if (this._foodScan) { this._foodScan = null; this.render(); return true; }
+    if (this._hsQuickAddOpen) { this._hsQuickAddOpen = false; this.render(); return true; }
+    if (this._hsListsPage175 && this._hsListsView175) { this._hsListsView175 = ''; this.render(); return true; }
+    if (this._foodNeoMenu) { this._foodNeoMenu = ''; this._foodNeoSearch = ''; this.render(); return true; }
+
+    // The persistent X is a view close control, never an exit from HomeStock.
+    this._hsListsPage175 = false;
+    this._hsListsView175 = '';
+    this._hsSettingsPage = false;
+    this._hsQuickAddOpen = false;
+    this._mode = 'food';
+    this._foodNeoMenu = '';
+    this._foodNeoSearch = '';
+    this.render();
+    return true;
+  };
   const previousConsDialog212 = Panel.prototype.consScanDialog;
   const previousLoad214 = Panel.prototype.load;
   const previousConnected214 = Panel.prototype.connectedCallback;
@@ -77,12 +122,19 @@ if (Panel) {
     if (!root) return;
 
     const version = root.querySelector('.hsVersion165 b');
-    if (version) version.textContent = 'v2.0.17';
+    if (version) version.textContent = 'v2.0.18';
+
+    const close = root.querySelector('#homeStockExit');
+    if (close) {
+      close.setAttribute('aria-label', 'Chiudi schermata');
+      close.setAttribute('title', 'Chiudi schermata');
+    }
 
     if (!root.querySelector('#hsUsability214')) {
       const style = document.createElement('style');
       style.id = 'hsUsability214';
       style.textContent = `
+        .voiceInput216 textarea{margin-top:10px!important}
         .hsLoading214{min-height:min(58vh,520px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;text-align:center;color:#eaf4ff}
         .hsLoading214 b{font-size:16px}.hsLoading214 small{color:#8194a9!important;font-size:11px!important}
         .hsLoadingSpinner214{width:32px;height:32px;border-radius:50%;border:3px solid rgba(105,183,255,.18);border-top-color:#4daeff;animation:hsSpin214 .8s linear infinite}
