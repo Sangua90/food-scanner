@@ -19,7 +19,7 @@ from .gemini_compat import RUNTIME_KEY, _candidate_models, _get_entry as _compat
 
 
 _FAST_MODEL = "gemini-2.5-flash-lite"
-VOICE_AI_TIMEOUT = 12
+VOICE_AI_TIMEOUT = 22
 _NUMBER_WORDS = {
     "un": 1, "uno": 1, "una": 1,
     "due": 2, "tre": 3, "quattro": 4, "cinque": 5,
@@ -287,10 +287,36 @@ async def async_voice_consume_preview(hass: HomeAssistant, text: str, kind: str 
     parsed = _fast_local_parse(phrase, active)
     if parsed is not None:
         hass.data.setdefault(RUNTIME_KEY, {})["last_ai_backend"] = "local_fast_match"
+        # Resolve only the local misses with AI, preserving the instant matches.
+        unresolved = [x for x in parsed.get("requests", []) if not x.get("matched_id")]
+        if unresolved:
+            try:
+                async with asyncio.timeout(VOICE_AI_TIMEOUT):
+                    ai_parsed = await _gemini_parse(hass, phrase, active, kind)
+                ai_requests = ai_parsed.get("requests", []) if isinstance(ai_parsed, dict) else []
+                for local_req in parsed.get("requests", []):
+                    if local_req.get("matched_id"):
+                        continue
+                    local_tokens = _tokens_fast(local_req.get("spoken_name"))
+                    best_ai = None
+                    best_overlap = 0
+                    for ai_req in ai_requests:
+                        overlap = len(local_tokens & _tokens_fast(ai_req.get("spoken_name")))
+                        if overlap > best_overlap:
+                            best_overlap = overlap
+                            best_ai = ai_req
+                    if best_ai and (best_ai.get("matched_id") or best_ai.get("ambiguous_ids")):
+                        local_req.update(best_ai)
+            except (TimeoutError, HomeAssistantError):
+                # Local results remain usable even if AI is temporarily unavailable.
+                pass
     else:
-        # One budget for discovery, Engine and all direct model attempts.
-        async with asyncio.timeout(VOICE_AI_TIMEOUT):
-            parsed = await _gemini_parse(hass, phrase, active, kind)
+        # Nothing matched locally: AI is the authoritative fallback.
+        try:
+            async with asyncio.timeout(VOICE_AI_TIMEOUT):
+                parsed = await _gemini_parse(hass, phrase, active, kind)
+        except TimeoutError as err:
+            raise HomeAssistantError("L'AI non ha risposto in tempo. Riprova: nessun prodotto è stato modificato.") from err
     by_id = {x["id"]: x for x in active}
     operations: list[dict[str, Any]] = []
     for request in parsed.get("requests", [])[:20]:
