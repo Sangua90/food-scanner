@@ -1,4 +1,4 @@
-import './panel_v161.js?v=1.6.14-base';
+import './panel_v161.js?v=2.0.15';
 
 const HomeStockPanel = customElements.get('food-scanner-panel');
 

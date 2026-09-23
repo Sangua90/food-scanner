@@ -49,11 +49,11 @@ def _model_rank(model: str, major: int, minor: int) -> tuple[int, int, int]:
     return (lite, major, minor)
 
 
-async def _list_flash_models(hass: HomeAssistant, api_key: str) -> list[str]:
+async def _list_flash_models(hass: HomeAssistant, api_key: str, timeout: float = 20) -> list[str]:
     session = async_get_clientsession(hass)
     url = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000"
     try:
-        async with session.get(url, headers={"x-goog-api-key": api_key}, timeout=aiohttp.ClientTimeout(total=20)) as response:
+        async with session.get(url, headers={"x-goog-api-key": api_key}, timeout=aiohttp.ClientTimeout(total=timeout)) as response:
             body = await response.text()
             if response.status >= 400:
                 raise HomeAssistantError(f"Gemini models API {response.status}: {body[:500]}")
@@ -78,15 +78,15 @@ async def _list_flash_models(hass: HomeAssistant, api_key: str) -> list[str]:
     return [model for _, model in ranked]
 
 
-async def _candidate_models(hass: HomeAssistant, entry, api_key: str) -> list[str]:
+async def _candidate_models(hass: HomeAssistant, entry, api_key: str, *, discovery_timeout: float = 20) -> list[str]:
     manual = _manual_model(entry)
     if _model_mode(entry) != MODEL_MODE_AUTO:
         return [manual]
     runtime = hass.data.setdefault(RUNTIME_KEY, {})
     last_good = str(runtime.get("gemini_last_good_model") or "").strip()
     try:
-        discovered = await _list_flash_models(hass, api_key)
-    except HomeAssistantError:
+        discovered = await _list_flash_models(hass, api_key, discovery_timeout)
+    except (HomeAssistantError, TimeoutError):
         discovered = []
     candidates: list[str] = []
     if discovered:

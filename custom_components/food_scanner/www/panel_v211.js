@@ -1,4 +1,4 @@
-import './panel_v210.js?v=2.0.11-base';
+import './panel_v210.js?v=2.0.15';
 
 const Panel = customElements.get('food-scanner-panel');
 

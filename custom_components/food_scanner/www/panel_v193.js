@@ -1,7 +1,10 @@
-import './panel_v192.js?v=1.6.48-base';
+import './panel_v192.js?v=2.0.15';
 const P=customElements.get('food-scanner-panel');
 if(P){
   P.prototype.voiceErrorText=function(err){
+    if(Number(err?.status||err?.status_code)===504||/\b504\b/.test(err?.message||'')){
+      return 'Il gateway non ha ricevuto risposta (504). Verifica la connessione a Home Assistant; confronta accesso locale e remoto. Nessuna modifica viene applicata durante analisi o trascrizione.';
+    }
     const seen=new Set();
     const pick=(v)=>{
       if(v==null) return '';

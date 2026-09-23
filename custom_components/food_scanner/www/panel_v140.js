@@ -8,6 +8,7 @@ class FoodScannerPanel extends HTMLElement {
   set hass(v){const first=!this._hass;this._hass=v;if(first)this.load();}
   set panel(v){this._panel=v;}
   connectedCallback(){this.render();}
+  disconnectedCallback(){this.voiceStopMedia1651?.();this._voice=null;}
   esc(v){return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');}
   loc(v){return({frigo:'Frigo',freezer:'Freezer',dispensa:'Dispensa',magazzino:'Magazzino',bagno:'Bagno',cucina:'Cucina',lavanderia:'Lavanderia'})[v]||'Senza posizione';}
   unit(v){const s=String(v||'').toLowerCase();if(s.includes('bott'))return'Bottiglie';if(s.includes('latt')||s.includes('scatol'))return'Lattine';if(s.includes('vasett')||s.includes('baratt'))return'Vasetti';if(s.includes('confez')||s.includes('pacc'))return'Confezioni';return'Pezzi';}
