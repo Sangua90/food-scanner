@@ -6,8 +6,8 @@ if (Panel) {
   const previousVoiceHtml216 = Panel.prototype.voiceHtml;
   const previousSmartClose216 = Panel.prototype.smartClose176;
 
-  // Direct microphone recording is intentionally not offered: browser and iPhone
-  // keyboards already provide dictation and it avoids another permission path.
+  // Keep both paths: keyboard dictation for maximum compatibility and direct
+  // microphone recording when the browser exposes MediaRecorder.
   Panel.prototype.voiceHtml = function() {
     const state = this._voice;
     if (!state || (state.status !== 'input' && state.status !== 'error')) {
@@ -27,10 +27,13 @@ if (Panel) {
       <textarea id="voiceText" rows="4" placeholder="Scrivi o detta qui…">${esc(state.text || '')}</textarea>
       <small>Esempio: “${esc(example)}”</small>
       <button id="voiceGo" class="primary">Analizza</button>
+      <div class="voiceOr216"><span></span><b>OPPURE</b><span></span></div>
+      <button id="voiceRecord216" class="voiceRecord216">🎙 <span><b>Registra vocale</b><small>Parla direttamente a HomeStock</small></span></button>
     </div></div>`;
   };
 
   Panel.prototype.smartClose176 = function() {
+    if (this._voice) { this._voice = null; this.render(); return true; }
     if (this._consScan) { this._consScan = null; this.render(); return true; }
     if (this._foodScan) { this._foodScan = null; this.render(); return true; }
     if (this._hsQuickAddOpen) { this._hsQuickAddOpen = false; this.render(); return true; }
@@ -116,13 +119,62 @@ if (Panel) {
   };
 
   const previousRender212 = Panel.prototype.render;
+
+  Panel.prototype.hsVoiceRecord216 = async function() {
+    const s = this._voice;
+    if (!s) return;
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      s.status = 'error';
+      s.message = 'Registrazione diretta non disponibile qui. Usa il microfono della tastiera.';
+      this.render();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+      const preferred = ['audio/mp4','audio/webm;codecs=opus','audio/webm'].find(x => MediaRecorder.isTypeSupported?.(x));
+      const rec = preferred ? new MediaRecorder(stream,{mimeType:preferred}) : new MediaRecorder(stream);
+      const chunks = [];
+      rec.ondataavailable = e => { if (e.data?.size) chunks.push(e.data); };
+      rec.onstop = async () => {
+        stream.getTracks().forEach(t=>t.stop());
+        try {
+          const blob = new Blob(chunks,{type:rec.mimeType || preferred || 'audio/webm'});
+          const raw = await new Promise((resolve,reject)=>{
+            const reader=new FileReader();
+            reader.onload=()=>resolve(String(reader.result||'').split(',')[1]||'');
+            reader.onerror=()=>reject(reader.error);
+            reader.readAsDataURL(blob);
+          });
+          s.status='loading'; s.message='Trascrizione in corso…'; this.render();
+          const out=await this._hass.callApi('POST','food_scanner/voice_consume',{action:'transcribe',audio_data:raw,mime_type:(blob.type||'audio/webm').split(';')[0]});
+          s.text=String(out?.text||'').trim();
+          s.status='input'; this.render();
+        } catch(e) {
+          s.status='error'; s.message=e?.message||String(e); this.render();
+        }
+      };
+      rec.start();
+      s._recorder216=rec;
+      s.status='recording216'; this.render();
+      setTimeout(()=>{ if(rec.state==='recording') rec.stop(); },15000);
+    } catch(e) {
+      s.status='error'; s.message='Microfono non disponibile: '+(e?.message||String(e)); this.render();
+    }
+  };
+
   Panel.prototype.render = function() {
     previousRender212.call(this);
     const root = this.shadowRoot;
     if (!root) return;
 
     const version = root.querySelector('.hsVersion165 b');
-    if (version) version.textContent = 'v2.0.18';
+    if (version) version.textContent = 'v2.0.19';
+
+    // Bind voice controls after every render; older voiceDecorate only binds
+    // when it creates the overlay itself.
+    root.querySelector('#voiceX')?.addEventListener('click', () => { this._voice=null; this.render(); }, {once:true});
+    root.querySelector('#voiceGo')?.addEventListener('click', () => this.voiceAnalyze(), {once:true});
+    root.querySelector('#voiceRecord216')?.addEventListener('click', () => this.hsVoiceRecord216(), {once:true});
 
     const close = root.querySelector('#homeStockExit');
     if (close) {
@@ -134,7 +186,8 @@ if (Panel) {
       const style = document.createElement('style');
       style.id = 'hsUsability214';
       style.textContent = `
-        .voiceInput216 textarea{margin-top:10px!important}
+.voiceInput216 textarea{margin-top:10px!important}
+        .voiceOr216{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;margin:16px 0;color:#718398;font-size:10px;letter-spacing:.14em}.voiceOr216 span{height:1px;background:rgba(120,175,230,.16)}.voiceRecord216{width:100%!important;min-height:58px!important;display:flex!important;align-items:center!important;gap:12px!important;text-align:left!important;padding:10px 14px!important;border-radius:16px!important}.voiceRecord216 span{display:flex;flex-direction:column}.voiceRecord216 small{margin:2px 0 0!important}
         .hsLoading214{min-height:min(58vh,520px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;text-align:center;color:#eaf4ff}
         .hsLoading214 b{font-size:16px}.hsLoading214 small{color:#8194a9!important;font-size:11px!important}
         .hsLoadingSpinner214{width:32px;height:32px;border-radius:50%;border:3px solid rgba(105,183,255,.18);border-top-color:#4daeff;animation:hsSpin214 .8s linear infinite}
