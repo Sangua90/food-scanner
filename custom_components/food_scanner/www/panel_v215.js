@@ -1,4 +1,4 @@
-import './panel_v211.js?v=2.0.16';
+import './panel_v211.js?v=2.0.17';
 
 const Panel = customElements.get('food-scanner-panel');
 
@@ -77,7 +77,7 @@ if (Panel) {
     if (!root) return;
 
     const version = root.querySelector('.hsVersion165 b');
-    if (version) version.textContent = 'v2.0.16';
+    if (version) version.textContent = 'v2.0.17';
 
     if (!root.querySelector('#hsUsability214')) {
       const style = document.createElement('style');

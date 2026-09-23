@@ -98,7 +98,7 @@ async function audit(page, label) {
       await page.locator('food-scanner-panel').locator('.hsSettings165').waitFor();
       const settingsAudit=await audit(page,`${vp.name}-settings`);
       assert.deepEqual(errors,[]);
-      assert.equal(await page.locator('food-scanner-panel').evaluate(host=>host.__homestock_frontend_build),'2.0.16');
+      assert.equal(await page.locator('food-scanner-panel').evaluate(host=>host.__homestock_frontend_build),'2.0.17');
       if(foodAudit.offenders.length||consAudit.offenders.length||modalAudit.offenders.length||listsAudit.offenders.length||settingsAudit.offenders.length) console.log('OVERFLOW DETECTED',vp.name);
       await page.close();
     }

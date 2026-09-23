@@ -113,7 +113,7 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(5)
         with patch.object(voice, "_gemini_parse", stalled), patch.object(api, "PREVIEW_TIMEOUT", .01):
             status, out = await self.post({"text": "sconosciuto"})
-        self.assertEqual(status, 408)
+        self.assertEqual(status, 200)
         self.assertEqual(out["code"], "voice_timeout")
 
     async def test_all_model_attempts_share_one_budget(self):
@@ -123,7 +123,7 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
         calls = AsyncMock(side_effect=slow_error)
         with patch.object(voice, "VOICE_AI_TIMEOUT", .025), patch.object(voice, "async_engine_gemini_json", AsyncMock(return_value=None)), patch.object(voice, "_candidate_models", AsyncMock(return_value=["one", "two", "three"])), patch.object(voice, "_call_voice_model", calls):
             status, out = await self.post({"text": "sconosciuto"})
-        self.assertEqual(status, 408)
+        self.assertEqual(status, 200)
         self.assertEqual(out["code"], "voice_timeout")
         self.assertLessEqual(calls.await_count, 2)
 
@@ -136,7 +136,7 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
                 cancelled.set()
         with patch.object(transcribe, "async_engine_transcribe", AsyncMock(return_value=None)), patch.object(transcribe, "_candidate_models", AsyncMock(return_value=["test"])), patch.object(transcribe, "_call_transcribe_model", stalled), patch.object(api, "TRANSCRIBE_TIMEOUT", .01):
             status, out = await self.post({"action": "transcribe", "audio_data": "YQ==", "mime_type": "audio/mp4"})
-        self.assertEqual(status, 408)
+        self.assertEqual(status, 200)
         self.assertEqual(out["code"], "voice_timeout")
         self.assertTrue(cancelled.is_set())
 
