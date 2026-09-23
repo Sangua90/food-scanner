@@ -61,7 +61,7 @@ class HomeStockVoiceConsumeView(HomeAssistantView):
                 "success": False,
                 "code": "voice_timeout",
                 "message": "Tempo disponibile esaurito. Scrivi o usa la dettatura della tastiera; riprova con un prodotto alla volta.",
-            }, status_code=HTTPStatus.REQUEST_TIMEOUT)
+            })
         except HomeAssistantError as err:
             return self.json_message(str(err), status_code=HTTPStatus.BAD_REQUEST)
         finally:

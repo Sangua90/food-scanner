@@ -1,5 +1,9 @@
 # HomeStock changelog
 
+## 2.0.17
+
+- Un timeout di consumo vocale o trascrizione ora restituisce un esito gestito dall'applicazione con messaggio e fallback testuale, senza risposta HTTP 408 che Home Assistant mostrava come errore generico.
+
 ## 2.0.16
 
 - Verifica visiva e funzionale dell'intero pannello su desktop, tablet e iPhone, comprese le viste Alimenti, Consumabili, Liste, Impostazioni e aggiunta manuale.
