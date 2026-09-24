@@ -138,8 +138,12 @@ def _fast_local_parse(text: str, inventory: list[dict[str, Any]]) -> dict[str, A
     return {"requests": requests} if requests and matched_any else None
 
 def _system_prompt(kind: str) -> str:
-    noun = "consumabili" if kind == "cons" else "alimenti"
-    verbs = '"usato", "tolto", "finito", "consumato"' if kind == "cons" else '"usato", "tolto", "mangiato", "aperto", "consumato"'
+    if kind == "auto":
+        noun = "prodotti (alimenti e consumabili)"
+        verbs = '"usato", "tolto", "finito", "mangiato", "aperto", "consumato"'
+    else:
+        noun = "consumabili" if kind == "cons" else "alimenti"
+        verbs = '"usato", "tolto", "finito", "consumato"' if kind == "cons" else '"usato", "tolto", "mangiato", "aperto", "consumato"'
     return f"""Sei il parser vocale di HomeStock.
 L'utente detta {noun} che ha consumato. Devi confrontare la frase SOLO con l'inventario fornito.
 Restituisci esclusivamente JSON valido con forma:
@@ -174,6 +178,8 @@ Regole:
 def _compact_item(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(item.get("id") or ""),
+        "source_kind": item.get("source_kind"),
+        "original_id": item.get("original_id"),
         "product_name": item.get("product_name"),
         "generic_name": item.get("generic_name"),
         "brand": item.get("brand"),
@@ -264,13 +270,36 @@ def _safe_amount(value: Any) -> int:
 
 
 def _normalize_kind(kind: str | None) -> str:
-    return "cons" if str(kind or "").strip().lower() in {"cons", "consumable", "consumables", "consumabili"} else "food"
+    value = str(kind or "").strip().lower()
+    if value in {"auto", "all", "tutti", "prodotti"}:
+        return "auto"
+    if value in {"cons", "consumable", "consumables", "consumabili"}:
+        return "cons"
+    return "food"
 
 
 def _inventory(hass: HomeAssistant, kind: str) -> list[dict[str, Any]]:
     if kind == "cons":
         return get_consumables(hass).items()
-    return get_archive(hass).items_sorted(sort="expiry")
+    if kind == "food":
+        return get_archive(hass).items_sorted(sort="expiry")
+
+    combined: list[dict[str, Any]] = []
+    for item in get_archive(hass).items_sorted(sort="expiry"):
+        copy = dict(item)
+        original_id = str(copy.get("id") or "")
+        copy["original_id"] = original_id
+        copy["source_kind"] = "food"
+        copy["id"] = f"food:{original_id}"
+        combined.append(copy)
+    for item in get_consumables(hass).items():
+        copy = dict(item)
+        original_id = str(copy.get("id") or "")
+        copy["original_id"] = original_id
+        copy["source_kind"] = "cons"
+        copy["id"] = f"cons:{original_id}"
+        combined.append(copy)
+    return combined
 
 
 async def async_voice_consume_preview(hass: HomeAssistant, text: str, kind: str = "food") -> dict[str, Any]:
@@ -282,7 +311,7 @@ async def async_voice_consume_preview(hass: HomeAssistant, text: str, kind: str 
         raise HomeAssistantError("Dettatura troppo lunga.")
     active = [_compact_item(x) for x in _inventory(hass, kind) if int(x.get("stock_units") or 0) > 0]
     if not active:
-        label = "consumabili" if kind == "cons" else "alimenti"
+        label = "prodotti" if kind == "auto" else ("consumabili" if kind == "cons" else "alimenti")
         return {"success": True, "kind": kind, "phrase": phrase, "operations": [], "can_confirm": False, "message": f"Il magazzino {label} e vuoto."}
     parsed = _fast_local_parse(phrase, active)
     if parsed is not None:
@@ -347,6 +376,7 @@ async def async_voice_consume_preview(hass: HomeAssistant, text: str, kind: str 
             "spoken_name": spoken,
             "status": "matched" if amount <= available else "insufficient",
             "id": matched["id"],
+            "source_kind": matched.get("source_kind") or kind,
             "product_name": matched.get("product_name"),
             "brand": matched.get("brand"),
             "quantity": matched.get("quantity"),
@@ -382,10 +412,19 @@ async def async_voice_consume_apply(hass: HomeAssistant, operations: list[dict[s
     if not isinstance(operations, list) or not operations:
         raise HomeAssistantError("Nessuna modifica da confermare.")
 
-    store = get_consumables(hass) if kind == "cons" else get_archive(hass)
-    current = {str(x.get("id")): x for x in store.items()}
+    food_store = get_archive(hass)
+    cons_store = get_consumables(hass)
+
+    if kind == "auto":
+        food_current = {f"food:{str(x.get('id'))}": x for x in food_store.items()}
+        cons_current = {f"cons:{str(x.get('id'))}": x for x in cons_store.items()}
+        current = {**food_current, **cons_current}
+    else:
+        store = cons_store if kind == "cons" else food_store
+        current = {str(x.get("id")): x for x in store.items()}
+
     remaining = {key: int(item.get("stock_units") or 0) for key, item in current.items()}
-    validated: list[tuple[str, int, dict[str, Any]]] = []
+    validated: list[tuple[str, str, int, dict[str, Any]]] = []
     skipped: list[dict[str, Any]] = []
 
     for op in operations[:20]:
@@ -397,7 +436,6 @@ async def async_voice_consume_apply(hass: HomeAssistant, operations: list[dict[s
         status = str(op.get("status") or "").strip().lower()
         product_id = str(op.get("id") or "").strip()
 
-        # Unresolved voice requests no longer block the valid ones.
         if not product_id or status in {"not_found", "ambiguous", "insufficient"}:
             skipped.append({"spoken_name": spoken_name, "status": status or "not_found", "reason": "not_applied"})
             continue
@@ -419,17 +457,24 @@ async def async_voice_consume_apply(hass: HomeAssistant, operations: list[dict[s
             })
             continue
 
-        validated.append((product_id, amount, item))
+        if kind == "auto":
+            source_kind, original_id = product_id.split(":", 1)
+        else:
+            source_kind, original_id = kind, product_id
+
+        validated.append((source_kind, original_id, amount, item))
         remaining[product_id] -= amount
 
     if not validated:
         raise HomeAssistantError("Nessun prodotto riconosciuto da salvare.")
 
     results = []
-    for product_id, amount, item in validated:
-        result = await store.async_consume(product_id, amount)
+    for source_kind, original_id, amount, item in validated:
+        store = cons_store if source_kind == "cons" else food_store
+        result = await store.async_consume(original_id, amount)
         results.append({
-            "id": product_id,
+            "id": original_id,
+            "source_kind": source_kind,
             "product_name": item.get("product_name"),
             "brand": item.get("brand"),
             "amount": amount,
@@ -444,3 +489,4 @@ async def async_voice_consume_apply(hass: HomeAssistant, operations: list[dict[s
         "applied_count": len(results),
         "skipped_count": len(skipped),
     }
+
