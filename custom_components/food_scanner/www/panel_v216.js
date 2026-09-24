@@ -211,7 +211,7 @@ if (Panel) {
     if (!root) return;
 
     const version = root.querySelector('.hsVersion165 b');
-    if (version) version.textContent = 'v2.0.26';
+    if (version) version.textContent = 'v2.0.27';
 
     // Bind voice controls after every render; older voiceDecorate only binds
     // when it creates the overlay itself.
