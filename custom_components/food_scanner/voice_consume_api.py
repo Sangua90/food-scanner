@@ -15,7 +15,7 @@ from .voice_transcribe import async_transcribe_voice
 
 _LOGGER = logging.getLogger(__name__)
 TRANSCRIBE_TIMEOUT = 20
-PREVIEW_TIMEOUT = 15
+PREVIEW_TIMEOUT = 35
 
 
 class HomeStockVoiceConsumeView(HomeAssistantView):
