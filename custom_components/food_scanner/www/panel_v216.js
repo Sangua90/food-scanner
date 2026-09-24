@@ -40,6 +40,44 @@ if (Panel) {
     return ops.some(x => x?.status === 'matched' && x?.id && Number(x?.amount) > 0);
   };
 
+  // v191/v193 did not carry kind through API calls. Unified consumption must
+  // explicitly send "auto" on preview/apply.
+  Panel.prototype.voiceOpen = function(kind = 'auto') {
+    this._voice = {status:'input', text:'', ops:[], kind: kind || 'auto'};
+    this.render();
+  };
+
+  Panel.prototype.voiceAnalyze = async function() {
+    const r=this.shadowRoot,s=this._voice;
+    if(!r||!s)return;
+    const text=(r.querySelector('#voiceText')?.value||s.text||'').trim();
+    if(!text){alert('Detta prima cosa hai utilizzato.');return;}
+    s.text=text;s.status='loading';this.render();
+    try{
+      const out=await this._hass.callApi('POST','food_scanner/voice_consume',{action:'preview',text,kind:s.kind||'auto'});
+      s.ops=Array.isArray(out?.operations)?out.operations:[];
+      if(!s.ops.length&&out?.message){s.status='error';s.message=String(out.message);this.render();return;}
+      s.status='preview';this.render();
+    }catch(e){s.status='error';s.message=this.voiceErrorText?this.voiceErrorText(e):(e?.message||String(e));this.render();}
+  };
+
+  Panel.prototype.voiceApply = async function() {
+    const s=this._voice;
+    if(!s||!this.voiceCanConfirm())return;
+    s.status='saving';this.render();
+    try{
+      const operations=s.ops.map(x=>({
+        id:x.id, status:x.status, spoken_name:x.spoken_name,
+        amount:x.amount, consume_all:!!x.consume_all, source_kind:x.source_kind
+      }));
+      const out=await this._hass.callApi('POST','food_scanner/voice_consume',{action:'apply',kind:s.kind||'auto',operations});
+      s.results=Array.isArray(out?.results)?out.results:[];
+      s.status='success';
+      try{await this.load();}catch(_){}
+      this.render();
+    }catch(e){s.status='error';s.message=this.voiceErrorText?this.voiceErrorText(e):(e?.message||String(e));this.render();}
+  };
+
   Panel.prototype.smartClose176 = function() {
     if (this._voice) {
       const recorder = this._voice?._recorder216;
@@ -173,7 +211,7 @@ if (Panel) {
     if (!root) return;
 
     const version = root.querySelector('.hsVersion165 b');
-    if (version) version.textContent = 'v2.0.23';
+    if (version) version.textContent = 'v2.0.24';
 
     // Bind voice controls after every render; older voiceDecorate only binds
     // when it creates the overlay itself.
