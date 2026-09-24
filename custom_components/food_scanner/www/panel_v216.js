@@ -169,11 +169,25 @@ if (Panel) {
     if (!root) return;
 
     const version = root.querySelector('.hsVersion165 b');
-    if (version) version.textContent = 'v2.0.20';
+    if (version) version.textContent = 'v2.0.21';
 
     // Bind voice controls after every render; older voiceDecorate only binds
     // when it creates the overlay itself.
-    root.querySelector('#voiceX')?.addEventListener('click', () => { this._voice=null; this.render(); }, {once:true});
+    const voiceClose = root.querySelector('#voiceX');
+    if (voiceClose && !voiceClose.__hsClose220) {
+      voiceClose.__hsClose220 = true;
+      voiceClose.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const recorder = this._voice?._recorder216;
+        if (recorder?.state === 'recording') {
+          try { recorder.stop(); } catch (_) {}
+        }
+        this._voice = null;
+        root.querySelector('.voiceOv')?.remove();
+        this.render();
+      }, true);
+    }
     root.querySelector('#voiceGo')?.addEventListener('click', () => this.voiceAnalyze(), {once:true});
     root.querySelector('#voiceRecord216')?.addEventListener('click', () => this.hsVoiceRecord216(), {once:true});
 
