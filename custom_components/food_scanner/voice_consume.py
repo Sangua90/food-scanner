@@ -340,12 +340,31 @@ async def async_voice_consume_preview(hass: HomeAssistant, text: str, kind: str 
                 # Local results remain usable even if AI is temporarily unavailable.
                 pass
     else:
-        # Nothing matched locally: AI is the authoritative fallback.
+        # Nothing matched locally: try AI, but never turn a temporary/model
+        # failure into an HTTP 400 for the user. A safe unresolved preview is
+        # preferable and no stock is modified at this stage.
         try:
             async with asyncio.timeout(VOICE_AI_TIMEOUT):
                 parsed = await _gemini_parse(hass, phrase, active, kind)
-        except TimeoutError as err:
-            raise HomeAssistantError("L'AI non ha risposto in tempo. Riprova: nessun prodotto è stato modificato.") from err
+        except (TimeoutError, HomeAssistantError):
+            segments = [
+                part.strip(" .;:-")
+                for part in re.split(r"\\s*(?:,|;|\\be\\b|\\bpoi\\b)\\s*", phrase, flags=re.IGNORECASE)
+                if part.strip(" .;:-")
+            ]
+            parsed = {
+                "requests": [
+                    {
+                        "spoken_name": segment,
+                        "amount": _amount_from_segment(segment),
+                        "consume_all": _consume_all_from_segment(segment),
+                        "matched_id": None,
+                        "confidence": 0,
+                        "ambiguous_ids": [],
+                    }
+                    for segment in segments[:20]
+                ]
+            }
     by_id = {x["id"]: x for x in active}
     operations: list[dict[str, Any]] = []
     for request in parsed.get("requests", [])[:20]:
