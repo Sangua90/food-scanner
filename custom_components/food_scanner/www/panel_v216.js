@@ -15,10 +15,13 @@ if (Panel) {
     }
     const esc = value => this.esc ? this.esc(value) : String(value ?? '');
     const consumables = state.kind === 'cons';
-    const title = consumables ? 'Consuma consumabili' : 'Consuma alimenti';
-    const example = consumables
-      ? 'Due rotoli di carta cucina e un sapone mani Dove'
-      : 'Una pizza e due scatolette di tonno Migros';
+    const automatic = state.kind === 'auto';
+    const title = automatic ? 'Consuma prodotti' : (consumables ? 'Consuma consumabili' : 'Consuma alimenti');
+    const example = automatic
+      ? 'Due yogurt, una maionese e un rotolo di carta cucina'
+      : (consumables
+        ? 'Due rotoli di carta cucina e un sapone mani Dove'
+        : 'Una pizza e due scatolette di tonno Migros');
     return `<div class="voiceOv"><div class="voiceMd voiceInput216">
       <button id="voiceX">×</button>
       <h2>🎙 ${title}</h2>
@@ -30,6 +33,11 @@ if (Panel) {
       <div class="voiceOr216"><span></span><b>OPPURE</b><span></span></div>
       <button id="voiceRecord216" class="voiceRecord216">🎙 <span><b>${state.status === 'recording216' ? 'Termina registrazione' : 'Registra vocale'}</b><small>${state.status === 'recording216' ? 'Sto ascoltando…' : 'Parla direttamente a HomeStock'}</small></span></button>
     </div></div>`;
+  };
+
+  Panel.prototype.voiceCanConfirm = function() {
+    const ops = this._voice?.ops || [];
+    return ops.some(x => x?.status === 'matched' && x?.id && Number(x?.amount) > 0);
   };
 
   Panel.prototype.smartClose176 = function() {
@@ -165,7 +173,7 @@ if (Panel) {
     if (!root) return;
 
     const version = root.querySelector('.hsVersion165 b');
-    if (version) version.textContent = 'v2.0.22';
+    if (version) version.textContent = 'v2.0.23';
 
     // Bind voice controls after every render; older voiceDecorate only binds
     // when it creates the overlay itself.
@@ -198,30 +206,20 @@ if (Panel) {
     });
 
     const quickSheet = root.querySelector('.hsQuickSheet163');
-    if (quickSheet && !quickSheet.querySelector('#hsQuickVoiceFood220')) {
+    if (quickSheet) {
+      quickSheet.querySelectorAll('#hsQuickVoiceFood220,#hsQuickVoiceCons220,#hsQuickVoiceAuto223').forEach(node => node.remove());
       const manual = quickSheet.querySelector('#hsQuickManual');
-      const mk = (id, icon, title, subtitle, kind) => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.id = id;
-        btn.className = 'hsQuickAction voice220';
-        btn.innerHTML = `<span>${icon}</span><div><b>${title}</b><small>${subtitle}</small></div><em>›</em>`;
-        btn.addEventListener('click', () => {
-          this._hsQuickAddOpen = false;
-          this._mode = kind === 'cons' ? 'cons' : 'food';
-          this.voiceOpen(kind);
-        });
-        return btn;
-      };
-      const foodVoice = mk('hsQuickVoiceFood220','🎙','Consuma alimenti','Detta o registra cosa hai usato','food');
-      const consVoice = mk('hsQuickVoiceCons220','🎙','Consuma consumabili','Detta o registra cosa hai usato','cons');
-      if (manual) {
-        quickSheet.insertBefore(foodVoice, manual);
-        quickSheet.insertBefore(consVoice, manual);
-      } else {
-        quickSheet.appendChild(foodVoice);
-        quickSheet.appendChild(consVoice);
-      }
+      const voice = document.createElement('button');
+      voice.type = 'button';
+      voice.id = 'hsQuickVoiceAuto223';
+      voice.className = 'hsQuickAction voice220';
+      voice.innerHTML = '<span>🎙</span><div><b>Consuma prodotti</b><small>Alimenti e consumabili insieme</small></div><em>›</em>';
+      voice.addEventListener('click', () => {
+        this._hsQuickAddOpen = false;
+        this.voiceOpen('auto');
+      });
+      if (manual) quickSheet.insertBefore(voice, manual);
+      else quickSheet.appendChild(voice);
     }
 
     const close = root.querySelector('#homeStockExit');
