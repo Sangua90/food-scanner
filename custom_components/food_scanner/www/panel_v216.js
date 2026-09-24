@@ -33,23 +33,19 @@ if (Panel) {
   };
 
   Panel.prototype.smartClose176 = function() {
-    if (this._voice) { this._voice = null; this.render(); return true; }
-    if (this._consScan) { this._consScan = null; this.render(); return true; }
-    if (this._foodScan) { this._foodScan = null; this.render(); return true; }
-    if (this._hsQuickAddOpen) { this._hsQuickAddOpen = false; this.render(); return true; }
-    if (this._hsListsPage175 && this._hsListsView175) { this._hsListsView175 = ''; this.render(); return true; }
-    if (this._foodNeoMenu) { this._foodNeoMenu = ''; this._foodNeoSearch = ''; this.render(); return true; }
-
-    // The persistent X is a view close control, never an exit from HomeStock.
-    this._hsListsPage175 = false;
-    this._hsListsView175 = '';
-    this._hsSettingsPage = false;
-    this._hsQuickAddOpen = false;
-    this._mode = 'food';
-    this._foodNeoMenu = '';
-    this._foodNeoSearch = '';
-    this.render();
-    return true;
+    if (this._voice) {
+      const recorder = this._voice?._recorder216;
+      if (recorder?.state === 'recording') {
+        try { recorder.stop(); } catch (_) {}
+      }
+      this._voice = null;
+      this.render();
+      return true;
+    }
+    // Delegate every other close action to the established navigation logic:
+    // modals close locally, while the persistent main X exits HomeStock and
+    // returns to Home Assistant.
+    return previousSmartClose216.call(this);
   };
   const previousConsDialog212 = Panel.prototype.consScanDialog;
   const previousLoad214 = Panel.prototype.load;
@@ -169,7 +165,7 @@ if (Panel) {
     if (!root) return;
 
     const version = root.querySelector('.hsVersion165 b');
-    if (version) version.textContent = 'v2.0.21';
+    if (version) version.textContent = 'v2.0.22';
 
     // Bind voice controls after every render; older voiceDecorate only binds
     // when it creates the overlay itself.
@@ -191,6 +187,43 @@ if (Panel) {
     root.querySelector('#voiceGo')?.addEventListener('click', () => this.voiceAnalyze(), {once:true});
     root.querySelector('#voiceRecord216')?.addEventListener('click', () => this.hsVoiceRecord216(), {once:true});
 
+    // Central + menu is the single action hub.
+    root.querySelectorAll('.hsFoodHeaderActions1647,.hsConsHeaderActions1650').forEach(node => {
+      node.style.display = 'none';
+      node.setAttribute('aria-hidden','true');
+    });
+    root.querySelectorAll('#voiceBtn,#voiceBtnCons').forEach(node => {
+      node.style.display = 'none';
+      node.setAttribute('aria-hidden','true');
+    });
+
+    const quickSheet = root.querySelector('.hsQuickSheet163');
+    if (quickSheet && !quickSheet.querySelector('#hsQuickVoiceFood220')) {
+      const manual = quickSheet.querySelector('#hsQuickManual');
+      const mk = (id, icon, title, subtitle, kind) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.id = id;
+        btn.className = 'hsQuickAction voice220';
+        btn.innerHTML = `<span>${icon}</span><div><b>${title}</b><small>${subtitle}</small></div><em>›</em>`;
+        btn.addEventListener('click', () => {
+          this._hsQuickAddOpen = false;
+          this._mode = kind === 'cons' ? 'cons' : 'food';
+          this.voiceOpen(kind);
+        });
+        return btn;
+      };
+      const foodVoice = mk('hsQuickVoiceFood220','🎙','Consuma alimenti','Detta o registra cosa hai usato','food');
+      const consVoice = mk('hsQuickVoiceCons220','🎙','Consuma consumabili','Detta o registra cosa hai usato','cons');
+      if (manual) {
+        quickSheet.insertBefore(foodVoice, manual);
+        quickSheet.insertBefore(consVoice, manual);
+      } else {
+        quickSheet.appendChild(foodVoice);
+        quickSheet.appendChild(consVoice);
+      }
+    }
+
     const close = root.querySelector('#homeStockExit');
     if (close) {
       close.setAttribute('aria-label', 'Chiudi schermata');
@@ -202,7 +235,7 @@ if (Panel) {
       style.id = 'hsUsability214';
       style.textContent = `
 .voiceInput216 textarea{margin-top:10px!important}
-        .voiceOr216{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;margin:16px 0;color:#718398;font-size:10px;letter-spacing:.14em}.voiceOr216 span{height:1px;background:rgba(120,175,230,.16)}.voiceRecord216{width:100%!important;min-height:58px!important;display:flex!important;align-items:center!important;gap:12px!important;text-align:left!important;padding:10px 14px!important;border-radius:16px!important}.voiceRecord216 span{display:flex;flex-direction:column}.voiceRecord216 small{margin:2px 0 0!important}
+        .voiceOr216{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;margin:16px 0;color:#718398;font-size:10px;letter-spacing:.14em}.voiceOr216 span{height:1px;background:rgba(120,175,230,.16)}.voiceRecord216{width:100%!important;min-height:58px!important;display:flex!important;align-items:center!important;gap:12px!important;text-align:left!important;padding:10px 14px!important;border-radius:16px!important}.voiceRecord216 span{display:flex;flex-direction:column}.voiceRecord216 small{margin:2px 0 0!important}.hsQuickAction.voice220>span{background:rgba(119,85,255,.14)!important}
         .hsLoading214{min-height:min(58vh,520px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;text-align:center;color:#eaf4ff}
         .hsLoading214 b{font-size:16px}.hsLoading214 small{color:#8194a9!important;font-size:11px!important}
         .hsLoadingSpinner214{width:32px;height:32px;border-radius:50%;border:3px solid rgba(105,183,255,.18);border-top-color:#4daeff;animation:hsSpin214 .8s linear infinite}
