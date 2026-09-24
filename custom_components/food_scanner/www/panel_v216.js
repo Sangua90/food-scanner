@@ -10,7 +10,7 @@ if (Panel) {
   // microphone recording when the browser exposes MediaRecorder.
   Panel.prototype.voiceHtml = function() {
     const state = this._voice;
-    if (!state || (state.status !== 'input' && state.status !== 'error')) {
+    if (!state || !['input','error','recording216'].includes(state.status)) {
       return previousVoiceHtml216.call(this);
     }
     const esc = value => this.esc ? this.esc(value) : String(value ?? '');
@@ -28,7 +28,7 @@ if (Panel) {
       <small>Esempio: “${esc(example)}”</small>
       <button id="voiceGo" class="primary">Analizza</button>
       <div class="voiceOr216"><span></span><b>OPPURE</b><span></span></div>
-      <button id="voiceRecord216" class="voiceRecord216">🎙 <span><b>Registra vocale</b><small>Parla direttamente a HomeStock</small></span></button>
+      <button id="voiceRecord216" class="voiceRecord216">🎙 <span><b>${state.status === 'recording216' ? 'Termina registrazione' : 'Registra vocale'}</b><small>${state.status === 'recording216' ? 'Sto ascoltando…' : 'Parla direttamente a HomeStock'}</small></span></button>
     </div></div>`;
   };
 
@@ -123,6 +123,7 @@ if (Panel) {
   Panel.prototype.hsVoiceRecord216 = async function() {
     const s = this._voice;
     if (!s) return;
+    if (s._recorder216?.state === 'recording') { s._recorder216.stop(); return; }
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
       s.status = 'error';
       s.message = 'Registrazione diretta non disponibile qui. Usa il microfono della tastiera.';
@@ -168,7 +169,7 @@ if (Panel) {
     if (!root) return;
 
     const version = root.querySelector('.hsVersion165 b');
-    if (version) version.textContent = 'v2.0.19';
+    if (version) version.textContent = 'v2.0.20';
 
     // Bind voice controls after every render; older voiceDecorate only binds
     // when it creates the overlay itself.
