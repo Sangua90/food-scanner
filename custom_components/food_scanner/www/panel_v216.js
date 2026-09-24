@@ -211,7 +211,7 @@ if (Panel) {
     if (!root) return;
 
     const version = root.querySelector('.hsVersion165 b');
-    if (version) version.textContent = 'v2.0.25';
+    if (version) version.textContent = 'v2.0.26';
 
     // Bind voice controls after every render; older voiceDecorate only binds
     // when it creates the overlay itself.
@@ -251,7 +251,7 @@ if (Panel) {
       voice.type = 'button';
       voice.id = 'hsQuickVoiceAuto223';
       voice.className = 'hsQuickAction voice220';
-      voice.innerHTML = '<div><b>Consuma prodotti</b><small>Alimenti e consumabili insieme</small></div><em>›</em>';
+      voice.innerHTML = '<div><b>🎙 Consuma prodotti</b><small>Alimenti e consumabili insieme</small></div><em>›</em>';
       voice.addEventListener('click', () => {
         this._hsQuickAddOpen = false;
         this.voiceOpen('auto');
