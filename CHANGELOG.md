@@ -1,5 +1,9 @@
 # HomeStock changelog
 
+## 2.0.28
+
+- Uniformata la voce “Consuma prodotti” alle altre azioni del menu: icona del microfono nel riquadro dedicato e allineamento corretto su telefono.
+
 ## 2.0.18
 
 - La X permanente ora chiude la schermata o torna alla vista Alimenti; non esce più da HomeStock.
@@ -63,4 +67,3 @@
 - Coda Da verificare e seconda foto.
 - Multipack e unità standardizzate.
 - Open Food Facts, statistiche, CSV e backup JSON.
-- Filtri Frigo / Freezer / Dispensa e gestione scadenze.
