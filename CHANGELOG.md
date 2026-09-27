@@ -1,5 +1,9 @@
 # HomeStock changelog
 
+## 2.0.29
+
+- Rimossi i pulsanti “Scansiona” e microfono dall'intestazione di Alimenti e Consumabili; restano disponibili dal menu centrale “Aggiungi”.
+
 ## 2.0.28
 
 - Uniformata la voce “Consuma prodotti” alle altre azioni del menu: icona del microfono nel riquadro dedicato e allineamento corretto su telefono.
