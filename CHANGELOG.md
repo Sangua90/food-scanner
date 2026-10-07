@@ -1,5 +1,11 @@
 # HomeStock changelog
 
+## 2.0.30
+
+- Consumo: abbinamento tollerante a refusi, singolare/plurale e nomi parziali; Gemini interpreta i segmenti dubbi e i risultati certi restano conservati.
+- Scansioni ripetute: Gemini riceve il catalogo dei prodotti già riconosciuti e HomeStock riusa i dati identificativi quando trova lo stesso barcode; la scadenza degli alimenti è sempre letta dalla foto corrente.
+
+
 ## 2.0.29
 
 - Rimossi i pulsanti “Scansiona” e microfono dall'intestazione di Alimenti e Consumabili; restano disponibili dal menu centrale “Aggiungi”.

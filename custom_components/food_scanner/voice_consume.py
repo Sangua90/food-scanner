@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import unicodedata
+from difflib import SequenceMatcher
 from typing import Any
 
 import aiohttp
@@ -47,6 +48,67 @@ def _tokens_fast(value: Any) -> set[str]:
     return {x for x in _norm_fast(value).split() if len(x) > 1 and x not in _STOPWORDS and x not in _NUMBER_WORDS and not x.isdigit()}
 
 
+
+def _token_similarity(a: str, b: str) -> float:
+    if a == b:
+        return 1.0
+    ar = a[:-1] if len(a) > 4 and a.endswith(("a", "e", "i", "o")) else a
+    br = b[:-1] if len(b) > 4 and b.endswith(("a", "e", "i", "o")) else b
+    if ar == br:
+        return 0.96
+    ratio = SequenceMatcher(None, a, b).ratio() if min(len(a), len(b)) >= 4 else 0.0
+    return ratio if ratio >= 0.82 else 0.0
+
+
+def _local_candidate_score(segment: str, item: dict[str, Any]) -> float:
+    query = _tokens_fast(segment)
+    if not query:
+        return 0.0
+    name = _norm_fast(item.get("product_name"))
+    generic = _norm_fast(item.get("generic_name"))
+    brand = _norm_fast(item.get("brand"))
+    tokens = _tokens_fast(" ".join(x for x in (name, generic, brand) if x))
+    if not tokens:
+        return 0.0
+    scores = [max((_token_similarity(q, t) for t in tokens), default=0.0) for q in query]
+    strong = sum(x >= 0.82 for x in scores)
+    score = 0.68 * sum(scores) / len(query) + 0.18 * strong / max(1, min(len(tokens), 4))
+    if all(x >= 0.82 for x in scores):
+        score += 0.08
+    normalized = _norm_fast(segment)
+    if name and name in normalized:
+        score += 0.12
+    generic_tokens = _tokens_fast(generic)
+    if generic_tokens and all(max((_token_similarity(q, t) for q in query), default=0.0) >= 0.82 for t in generic_tokens):
+        score += 0.18
+    brand_tokens = _tokens_fast(brand)
+    if brand_tokens and all(max((_token_similarity(q, t) for q in query), default=0.0) >= 0.82 for t in brand_tokens):
+        score += 0.12
+    return min(score, 1.2)
+
+
+def _merge_ai_requests(local_requests: list[dict[str, Any]], ai_requests: list[dict[str, Any]]) -> None:
+    unresolved = [x for x in local_requests if not x.get("matched_id")]
+    candidates = [x for x in ai_requests if isinstance(x, dict)]
+    pairs = list(zip(unresolved, candidates)) if len(unresolved) == len(candidates) else []
+    for local, ai in pairs:
+        if not ai.get("matched_id") and not ai.get("ambiguous_ids"):
+            continue
+        for key in ("matched_id", "confidence", "ambiguous_ids", "amount", "consume_all"):
+            if key in ai:
+                local[key] = ai[key]
+    if not pairs:
+        for local in unresolved:
+            lt = _tokens_fast(local.get("spoken_name"))
+            ranked = sorted(((sum(max((_token_similarity(t, a) for a in _tokens_fast(ai.get("spoken_name"))), default=0.0) for t in lt) / max(1, len(lt)), ai) for ai in candidates), key=lambda x: x[0], reverse=True)
+            if ranked and ranked[0][0] >= 0.45 and (len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= 0.08):
+                ai = ranked[0][1]
+                if ai.get("matched_id") or ai.get("ambiguous_ids"):
+                    for key in ("matched_id", "confidence", "ambiguous_ids", "amount", "consume_all"):
+                        if key in ai:
+                            local[key] = ai[key]
+                candidates.remove(ai)
+
 def _amount_from_segment(segment: str) -> int:
     norm = _norm_fast(segment)
     match = re.search(r"\b(\d{1,3})\b", norm)
@@ -64,9 +126,6 @@ def _consume_all_from_segment(segment: str) -> bool:
 
 
 def _fast_local_parse(text: str, inventory: list[dict[str, Any]]) -> dict[str, Any] | None:
-    # Fast path: match every clearly recognizable segment locally. Unresolved
-    # segments are returned as not_found instead of forcing the whole request
-    # through a slow remote AI call.
     segments = [
         part.strip(" .;:-")
         for part in re.split(r"\s*(?:,|;|\be\b|\bpoi\b)\s*", text, flags=re.IGNORECASE)
@@ -74,68 +133,27 @@ def _fast_local_parse(text: str, inventory: list[dict[str, Any]]) -> dict[str, A
     ]
     if not segments:
         return None
-
-    requests: list[dict[str, Any]] = []
+    requests = []
     matched_any = False
     for segment in segments[:20]:
-        seg_tokens = _tokens_fast(segment)
-        if not seg_tokens:
+        if not _tokens_fast(segment):
             continue
-
-        scored: list[tuple[float, dict[str, Any]]] = []
-        seg_norm = _norm_fast(segment)
-        for item in inventory:
-            name = _norm_fast(item.get("product_name"))
-            generic = _norm_fast(item.get("generic_name"))
-            brand = _norm_fast(item.get("brand"))
-            fields = " ".join(x for x in (name, generic, brand) if x)
-            item_tokens = _tokens_fast(fields)
-            if not item_tokens:
-                continue
-            overlap = len(seg_tokens & item_tokens)
-            if overlap == 0:
-                continue
-            coverage = overlap / max(1, len(seg_tokens))
-            item_coverage = overlap / max(1, min(len(item_tokens), 4))
-            bonus = 0.0
-            if name and name in seg_norm:
-                bonus += 0.45
-            elif generic and generic in seg_norm:
-                bonus += 0.35
-            if brand and brand in seg_norm:
-                bonus += 0.25
-            score = coverage * 0.65 + item_coverage * 0.25 + bonus
-            scored.append((score, item))
-
-        scored.sort(key=lambda x: x[0], reverse=True)
+        scored = sorted(((_local_candidate_score(segment, item), item) for item in inventory), key=lambda pair: pair[0], reverse=True)
         best_score, best = scored[0] if scored else (0.0, None)
-        second_score = scored[1][0] if len(scored) > 1 else 0.0
-        clear = bool(best) and best_score >= 0.72 and (second_score == 0 or best_score - second_score >= 0.18)
-
-        if clear:
-            matched_any = True
-            requests.append({
-                "spoken_name": segment,
-                "amount": _amount_from_segment(segment),
-                "consume_all": _consume_all_from_segment(segment),
-                "matched_id": best.get("id"),
-                "confidence": min(99, max(80, int(best_score * 100))),
-                "ambiguous_ids": [],
-            })
-        else:
-            requests.append({
-                "spoken_name": segment,
-                "amount": _amount_from_segment(segment),
-                "consume_all": _consume_all_from_segment(segment),
-                "matched_id": None,
-                "confidence": 0,
-                "ambiguous_ids": [],
-            })
-
-    # If at least one product is clear, return immediately and let the UI save
-    # the valid matches while showing the unresolved ones. Only fully unresolved
-    # phrases use Gemini.
+        second = scored[1][0] if len(scored) > 1 else 0.0
+        clear = bool(best) and best_score >= 0.79 and (second == 0 or best_score - second >= 0.10)
+        ambiguous = [item.get("id") for score, item in scored[:4] if score >= best_score - 0.10 and item.get("id")] if not clear and best_score >= 0.62 and second > 0 and best_score - second < 0.10 else []
+        matched_any = matched_any or clear
+        requests.append({
+            "spoken_name": segment,
+            "amount": _amount_from_segment(segment),
+            "consume_all": _consume_all_from_segment(segment),
+            "matched_id": best.get("id") if clear and best else None,
+            "confidence": min(99, max(80, int(best_score * 100))) if clear else 0,
+            "ambiguous_ids": ambiguous,
+        })
     return {"requests": requests} if requests and matched_any else None
+
 
 def _system_prompt(kind: str) -> str:
     if kind == "auto":
@@ -164,8 +182,11 @@ Regole:
 - Interpreta italiano naturale: {verbs}.
 - Numeri scritti o detti vanno convertiti in interi positivi.
 - "ho finito", "finita", "finite", "tutto", "tutta la confezione rimasta" => consume_all=true.
-- Usa nome prodotto, marca e formato per scegliere il prodotto corretto.
-- Se l'utente cita una marca, darle molto peso.
+- Non richiedere che il nome pronunciato o scritto sia identico a quello salvato.
+- Interpreta refusi, singolare/plurale, abbreviazioni, sinonimi comuni e piccoli errori di dettatura.
+- Usa nome prodotto, nome generico, marca e formato per scegliere il candidato corretto dall'inventario.
+- Se l'utente cita una marca, darle molto peso; abbina il candidato plausibile anche se la frase è approssimativa.
+- Mantieni l'ordine delle richieste e restituisci una richiesta per ogni prodotto citato.
 - matched_id deve essere ESATTAMENTE uno degli id dell'inventario oppure null.
 - Se due o più prodotti sono plausibili e non c'e una scelta sicura, matched_id=null e ambiguous_ids contiene gli id plausibili (massimo 4).
 - Se non trovi il prodotto, matched_id=null e ambiguous_ids=[].
@@ -321,21 +342,10 @@ async def async_voice_consume_preview(hass: HomeAssistant, text: str, kind: str 
         if unresolved:
             try:
                 async with asyncio.timeout(VOICE_AI_TIMEOUT):
-                    ai_parsed = await _gemini_parse(hass, phrase, active, kind)
+                    unresolved_text = "; ".join(str(x.get("spoken_name") or "") for x in unresolved)
+                ai_parsed = await _gemini_parse(hass, unresolved_text, active, kind)
                 ai_requests = ai_parsed.get("requests", []) if isinstance(ai_parsed, dict) else []
-                for local_req in parsed.get("requests", []):
-                    if local_req.get("matched_id"):
-                        continue
-                    local_tokens = _tokens_fast(local_req.get("spoken_name"))
-                    best_ai = None
-                    best_overlap = 0
-                    for ai_req in ai_requests:
-                        overlap = len(local_tokens & _tokens_fast(ai_req.get("spoken_name")))
-                        if overlap > best_overlap:
-                            best_overlap = overlap
-                            best_ai = ai_req
-                    if best_ai and (best_ai.get("matched_id") or best_ai.get("ambiguous_ids")):
-                        local_req.update(best_ai)
+                _merge_ai_requests(parsed.get("requests", []), ai_requests)
             except (TimeoutError, HomeAssistantError):
                 # Local results remain usable even if AI is temporarily unavailable.
                 pass
@@ -349,7 +359,7 @@ async def async_voice_consume_preview(hass: HomeAssistant, text: str, kind: str 
         except (TimeoutError, HomeAssistantError):
             segments = [
                 part.strip(" .;:-")
-                for part in re.split(r"\\s*(?:,|;|\\be\\b|\\bpoi\\b)\\s*", phrase, flags=re.IGNORECASE)
+                for part in re.split(r"\s*(?:,|;|\be\b|\bpoi\b)\s*", phrase, flags=re.IGNORECASE)
                 if part.strip(" .;:-")
             ]
             parsed = {

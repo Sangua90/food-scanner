@@ -88,13 +88,32 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([op["id"] for op in out["operations"]], ["pizza", "tonno"])
             self.assertEqual(self.hass.data[voice.RUNTIME_KEY]["last_ai_backend"], "local_fast_match")
 
-    async def test_partial_match_never_calls_ai(self):
-        with patch.object(voice, "_gemini_parse", AsyncMock(side_effect=AssertionError("network called"))):
+    async def test_partial_match_asks_ai_only_for_unresolved_segment(self):
+        mock = AsyncMock(return_value={"requests": [{"spoken_name": "prodotto sconosciuto", "matched_id": None, "amount": 1, "confidence": 0, "ambiguous_ids": []}]})
+        with patch.object(voice, "_gemini_parse", mock):
             status, out = await self.post({"text": "pizza e prodotto sconosciuto"})
         self.assertEqual(status, 200)
         self.assertEqual(out["matched_count"], 1)
         self.assertEqual(out["unresolved_count"], 1)
         self.assertTrue(out["can_confirm"])
+        mock.assert_awaited_once()
+        self.assertEqual(mock.call_args.args[1], "prodotto sconosciuto")
+
+    async def test_typo_and_plural_match_locally(self):
+        self.items.append({"id": "yogurt", "product_name": "Yogurt Muller Fragola", "generic_name": "Yogurt", "brand": "Muller", "stock_units": 5})
+        with patch.object(voice, "_gemini_parse", AsyncMock(side_effect=AssertionError("clear typo match should stay local"))):
+            status, out = await self.post({"text": "due yogurth mullr"})
+        self.assertEqual(status, 200)
+        self.assertEqual(out["operations"][0]["id"], "yogurt")
+        self.assertEqual(out["operations"][0]["amount"], 2)
+
+    async def test_ai_canonical_name_merges_by_request_order(self):
+        mock = AsyncMock(return_value={"requests": [{"spoken_name": "tonno Migros", "matched_id": "tonno", "amount": 1, "confidence": 90, "ambiguous_ids": []}]})
+        with patch.object(voice, "_gemini_parse", mock):
+            status, out = await self.post({"text": "pizza e pesce in scatola"})
+        self.assertEqual(status, 200)
+        self.assertEqual([op["id"] for op in out["operations"]], ["pizza", "tonno"])
+        self.assertEqual(mock.call_args.args[1], "pesce in scatola")
 
     async def test_quantities_and_consume_all(self):
         _, out = await self.post({"text": "due pizza e finito tonno Migros", "kind": "cons"})

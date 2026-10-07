@@ -121,17 +121,64 @@ async def _gemini_json(hass, image_bytes: bytes, mime_type: str, prompt: str) ->
     raise HomeAssistantError("Nessun modello Gemini compatibile per i consumabili. " + " | ".join(errors[-3:]))
 
 
+def _known_consumable_by_barcode(hass, barcode: str) -> dict | None:
+    code = "".join(ch for ch in str(barcode or "") if ch.isdigit())
+    if not code:
+        return None
+    for item in get_consumables(hass).items():
+        saved = "".join(ch for ch in str(item.get("barcode") or "") if ch.isdigit())
+        if saved == code:
+            return item
+    return None
+
+
+def _known_consumable_catalog(hass) -> list[dict]:
+    catalog = []
+    seen = set()
+    for item in get_consumables(hass).items():
+        code = "".join(ch for ch in str(item.get("barcode") or "") if ch.isdigit())
+        if not code or code in seen or not item.get("product_name"):
+            continue
+        seen.add(code)
+        catalog.append({
+            "barcode": code,
+            "product_name": item.get("product_name"),
+            "brand": item.get("brand"),
+            "quantity": item.get("quantity"),
+            "category": item.get("category"),
+        })
+        if len(catalog) >= 80:
+            break
+    return catalog
+
+
 async def _analyze(hass, image_bytes: bytes, mime_type: str) -> tuple[dict, str]:
-    data, model = await _gemini_json(hass, image_bytes, mime_type, PROMPT)
-    if not data.get("product_name"):
-        raise HomeAssistantError("Consumabile non identificato correttamente.")
+    known = _known_consumable_catalog(hass)
+    prompt = PROMPT
+    if known:
+        prompt += (
+            "\n\nCatalogo dei prodotti già riconosciuti da HomeStock (aiuto per nome e confezione):\n"
+            + json.dumps(known, ensure_ascii=False, separators=(",", ":"))
+            + "\nSe il barcode della foto coincide, riusa nome, marca, formato e categoria del catalogo. "
+            + "Non riusare quantità in magazzino e non inventare barcode."
+        )
+    data, model = await _gemini_json(hass, image_bytes, mime_type, prompt)
     try:
         data["units_per_package"] = max(1, int(data.get("units_per_package") or 1))
     except (TypeError, ValueError):
         data["units_per_package"] = 1
     barcode = "".join(ch for ch in str(data.get("barcode") or "") if ch.isdigit())
-    if 8 <= len(barcode) <= 14:
-        data["barcode"] = barcode
+    product = _known_consumable_by_barcode(hass, barcode) if 8 <= len(barcode) <= 14 else None
+    if product:
+        for key in ("product_name", "brand", "quantity", "category"):
+            if product.get(key):
+                data[key] = product[key]
+        if product.get("product_image_url"):
+            data["product_image_url"] = product["product_image_url"]
+        if product.get("units_per_package"):
+            data["units_per_package"] = max(1, int(product["units_per_package"]))
+        data["barcode_source"] = "HomeStock"
+    elif 8 <= len(barcode) <= 14:
         product = await async_lookup_product(hass, barcode)
         if product:
             if not data.get("product_name") and product.get("product_name"): data["product_name"] = product["product_name"]
@@ -142,6 +189,8 @@ async def _analyze(hass, image_bytes: bytes, mime_type: str) -> tuple[dict, str]
             data["barcode_source"] = "Open Products Facts"
     else:
         data["barcode"] = None
+    if not data.get("product_name"):
+        raise HomeAssistantError("Consumabile non identificato correttamente.")
     data["generic_name"] = str(data.get("generic_name") or "").strip() or derive_generic_name(data.get("product_name"), data.get("brand"), data.get("category"))
     return data, model
 
@@ -176,7 +225,9 @@ class FoodScannerConsumablesView(HomeAssistantView):
                 barcode = "".join(ch for ch in str(result.get("barcode") or "") if ch.isdigit())
                 if len(barcode) < 8 or len(barcode) > 14:
                     return self.json({"success": True, "barcode_read": False, "model": model})
-                product = await async_lookup_product(hass, barcode)
+                product = _known_consumable_by_barcode(hass, barcode)
+                if product is None:
+                    product = await async_lookup_product(hass, barcode)
                 return self.json({"success": True, "barcode_read": True, "barcode": barcode, "found": product is not None, "product": product, "model": model})
             if action == "add_manual":
                 item, created = await store.async_add(data.get("changes") or {})

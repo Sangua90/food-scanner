@@ -229,17 +229,26 @@ def _is_inventory_ready(food: dict[str, Any]) -> bool:
     return int(food.get("confidence") or 0) >= MIN_READY_CONFIDENCE
 
 
-def _build_prompt(previous_food: dict[str, Any] | None = None) -> str:
-    if not previous_food:
-        return BASE_PROMPT
-    previous = json.dumps(previous_food, ensure_ascii=False)
-    return (
-        BASE_PROMPT
-        + "\nQuesta è una FOTO AGGIUNTIVA dello stesso prodotto. "
-        + "Usa i dati già estratti dalla foto precedente come contesto, correggili se la nuova foto li contraddice, "
-        + "e completa i campi mancanti. Dati precedenti:\n"
-        + previous
-    )
+def _build_prompt(
+    previous_food: dict[str, Any] | None = None,
+    known_products: list[dict[str, Any]] | None = None,
+) -> str:
+    prompt = BASE_PROMPT
+    if previous_food:
+        previous = json.dumps(previous_food, ensure_ascii=False)
+        prompt += (
+            "\nQuesta è una FOTO AGGIUNTIVA dello stesso prodotto. "
+            "Usa i dati già estratti dalla foto precedente come contesto, correggili se la nuova foto li contraddice, "
+            "e completa i campi mancanti. Dati precedenti:\n" + previous
+        )
+    if known_products:
+        prompt += (
+            "\nCatalogo HomeStock dei prodotti già riconosciuti (aiuto per identificare il prodotto):\n"
+            + json.dumps(known_products, ensure_ascii=False, separators=(",", ":"))
+            + "\nSe la confezione coincide con un barcode del catalogo, riusa i dati d'identità. "
+            + "La scadenza/TMC va sempre letta dalla foto attuale; non riutilizzare date precedenti."
+        )
+    return prompt
 
 
 def _resolve_mobile_notify(hass: HomeAssistant, entry) -> tuple[str, str] | None:
@@ -290,6 +299,7 @@ async def _call_gemini(
     image_bytes: bytes,
     mime_type: str,
     previous_food: dict[str, Any] | None = None,
+    known_products: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], str]:
     entry = _get_entry(hass)
     api_key = entry.data.get(CONF_API_KEY)
@@ -300,7 +310,7 @@ async def _call_gemini(
     payload = {
         "contents": [{"parts": [
             {"inline_data": {"mime_type": mime_type, "data": encoded}},
-            {"text": _build_prompt(previous_food)},
+            {"text": _build_prompt(previous_food, known_products)},
         ]}],
         "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
     }
@@ -357,11 +367,44 @@ async def async_analyze_image_bytes(
         previous_food = pending.get("food") or {}
         location = pending.get("location") or location
 
-    food, model = await _call_gemini(hass, image_bytes, mime_type, previous_food)
+    known_by_barcode: dict[str, dict[str, Any]] = {}
+    known_products: list[dict[str, Any]] = []
+    if not previous_food:
+        for item in get_archive(hass).items():
+            code = "".join(ch for ch in str(item.get("barcode") or "") if ch.isdigit())
+            if not code or not item.get("product_name"):
+                continue
+            known_by_barcode.setdefault(code, item)
+        known_products = [
+            {
+                "barcode": code,
+                "product_name": item.get("product_name"),
+                "brand": item.get("brand"),
+                "quantity": item.get("quantity"),
+                "category": item.get("category"),
+                "units_per_package": item.get("units_per_package"),
+                "unit_name": item.get("unit_name"),
+                "package_type": item.get("package_type"),
+            }
+            for code, item in list(known_by_barcode.items())[:80]
+        ]
 
-    if food.get("barcode"):
-        off = await async_lookup_barcode(hass, str(food.get("barcode")))
-        food = merge_off_data(food, off)
+    food, model = await _call_gemini(hass, image_bytes, mime_type, previous_food, known_products)
+
+    barcode = "".join(ch for ch in str(food.get("barcode") or "") if ch.isdigit())
+    if barcode:
+        food["barcode"] = barcode
+        known = known_by_barcode.get(barcode)
+        if known:
+            for key in ("product_name", "brand", "quantity", "category", "units_per_package", "unit_name", "package_type"):
+                if known.get(key):
+                    food[key] = known[key]
+            if known.get("product_image_url"):
+                food["product_image_url"] = known["product_image_url"]
+            food["barcode_source"] = "HomeStock"
+        else:
+            off = await async_lookup_barcode(hass, barcode)
+            food = merge_off_data(food, off)
         _normalize_package_fields(food)
 
     ready = _is_inventory_ready(food)
